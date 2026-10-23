@@ -1,0 +1,39 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ``typing_extensions`` exists here to back-port the ``TypeVar`` default 3.12 lacks, so
+        # the versions it is meant to carry have to be the ones the four gates run on.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Installing is part of the run. ``pytest``'s ``pythonpath = ["src"]`` reaches the test
+      # process only, and one dispatch test spawns a child interpreter that imports a module by
+      # name — that child needs ``composat`` installed to find it.
+      - name: Install the project and its dev group
+        run: pdm install -G dev
+
+      - name: pytest
+        run: pdm run pytest
+
+      - name: ruff format --check
+        run: pdm run ruff format --check .
+
+      - name: ruff check
+        run: pdm run ruff check .
+
+      - name: basedpyright
+        run: pdm run basedpyright

@@ -1,0 +1,75 @@
+[project]
+name = "composat"
+version = "0.1.0"
+description = "Component lifespan interface"
+authors = [
+  { name = "HivertMoZara", email = "worldmozara@163.com" },
+]
+dependencies = ["typing-extensions>=4.16.0"]
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.40.2",
+  "pytest>=9.1.1",
+  "ruff>=0.17.0",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+failOnWarnings = true
+pythonVersion = "3.12"
+
+[tool.pdm]
+distribution = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-markers"
+filterwarnings = ["error::RuntimeWarning"]
+
+[tool.ruff]
+src = ["src", "tests"]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle: errors
+  "W",  # pycodestyle: warnings
+  "F",  # pyflakes
+  "I",  # isort
+  "UP",  # pyupgrade
+  "B",  # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "SIM",  # flake8-simplify
+  "RUF",  # ruff-specific
+  "PERF",  # perflint
+  "PIE",  # flake8-pie
+  "RET",  # flake8-return
+  "N",  # pep8-naming
+  "PTH",  # flake8-use-pathlib
+  "TID",  # flake8-tidy-imports
+  "FURB",  # refurb
+  "FLY",  # flynt
+  "ISC",  # flake8-implicit-str-concat
+  "T20",  # flake8-print
+  "DTZ",  # flake8-datetimez
+  "LOG",  # flake8-logging
+  "G",  # flake8-logging-format
+  "BLE",  # flake8-blind-except
+  "PT",  # flake8-pytest-style
+  "S",  # flake8-bandit
+  "ANN",  # flake8-annotations
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PT011", "PT018"]
