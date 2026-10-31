@@ -1,9 +1,13 @@
 """Who a component is: the identity a *type* declares, and the key that names one *instance*.
 
-The two are kept apart on purpose. An identity (``name@version``) is what a component *is* — the
-family it belongs to; a key (identity + qualifier) is what tells one instance of that family from
-another. The registry, the graph, and every lookup are indexed by the key; the version is what lets
-two implementations of one name coexist, ordered rather than merely compared.
+An identity (``module.qualname``) is the unit a class was written in; a key adds the qualifier that
+tells one instance of that unit from another. The registry, the graph, and every lookup are indexed
+by the key.
+
+The identity is the class's own path, so a reload keeps the text and replaces the class object: the
+unit is stable, this generation of it is replaceable. A class defined inside a function carries
+``<locals>`` in its path — stable across generations, and reachable by neither the loader nor a
+reload, which is worth documenting rather than refusing.
 """
 
 from __future__ import annotations
@@ -11,42 +15,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self, override
 
-from .versioning import Version, VersionLike
-
 
 @dataclass(frozen=True, slots=True)
 class ComponentIdentity:
-    """Who a component *type* is: ``name@version``.
+    """Who a component *type* is: the module it is defined in, and its qualified name there.
 
-    The name is the type's own word for itself (``class WeatherTool(..., name="weather")``, or the
-    class path by default); the version is what lets two implementations coexist and
-    it is ordered, not just compared for equality — see :class:`~composat.versioning.Version`.
-    ``'@'`` and ``':'`` are reserved for rendering the key, so both fields stay clear of them.
+    Both fields come from the class itself, which is the pair that survives a reload. Two providers
+    of one path are compared for equality only; a deployment that needs to choose among them brings
+    its own ordering.
     """
 
-    name: str
-    version: VersionLike
+    module: str
+    qualname: str
 
     def __post_init__(self) -> None:
-        for label, value in (("name", self.name), ("version", str(self.version))):
+        for label, value in (("module", self.module), ("qualname", self.qualname)):
             if not value:
                 raise ValueError(f"a component identity needs a {label}")
-            if "@" in value or ":" in value:
-                raise ValueError(f"a component {label} must not contain '@' or ':': {value!r}")
-        if not isinstance(self.version, Version):
-            object.__setattr__(self, "version", Version.of(self.version))
+            if ":" in value:
+                raise ValueError(f"a component {label} must not contain ':': {value!r}")
+
+    @classmethod
+    def of(cls, component: type[object]) -> Self:
+        """The identity ``component`` declares: where it was defined, and what it is called there."""
+        return cls(component.__module__, component.__qualname__)
 
     @override
     def __str__(self) -> str:
-        return f"{self.name}@{self.version}"
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        """The identity ``text`` names; ``ValueError`` when it is not one."""
-        name, separator, version = text.partition("@")
-        if not separator:
-            raise ValueError(f"not a component identity: {text!r}")
-        return cls(name, version)
+        return f"{self.module}.{self.qualname}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,10 +50,10 @@ class ComponentKey:
     """One instance: an identity plus the qualifier that tells instances of it apart.
 
     ``instance`` is the declaring side's own discriminator — a tenant, a row id, whatever makes this
-    instance *this* instance — and it is opaque here. Empty means "the single instance of that
-    identity", which is the common case for platform-wide components; it is also the slot a
-    declaration marked ``shared`` sits in, and what makes that one instance the answer for every
-    qualifier holding no declaration of its own.
+    instance *this* instance — and it is opaque here. Empty names the single instance of that
+    identity, which is the common case for platform-wide components.
+
+    The qualifier may itself contain ``':'``, which is what makes the string form parse unambiguously.
     """
 
     identity: ComponentIdentity
@@ -69,6 +65,9 @@ class ComponentKey:
 
     @classmethod
     def parse(cls, text: str) -> Self:
-        """The key ``text`` names; the qualifier may itself contain ``':'``."""
+        """The key ``text`` names; the qualifier is whatever follows the first ``':'``."""
         head, separator, instance = text.partition(":")
-        return cls(ComponentIdentity.parse(head), instance if separator else "")
+        module, _, qualname = head.rpartition(".")
+        if not module or not qualname:
+            raise ValueError(f"not a component key: {text!r}")
+        return cls(ComponentIdentity(module, qualname), instance if separator else "")
