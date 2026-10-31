@@ -2,11 +2,10 @@
 
 The graph is **mutable**: nodes and edges come and go at runtime, so ordering is recomputed on
 every query. `graphlib.TopologicalSorter` schedules a *fixed* graph — after `prepare()` it refuses
-`add()` for good, and dropping a node or an edge, along with the reverse query, is beyond it. It is
-therefore used here only as a **one-shot ordering primitive**: build it from the current adjacency,
-walk it, drop it.
+`add()` for good, and dropping a node or an edge is beyond it. It is therefore used here only as a
+**one-shot ordering primitive**: build it from the current adjacency, walk it, drop it.
 
-The invariants live in this class rather than in the order the caller happens to call:
+Three invariants hold whatever order the caller works in:
 
 - **acyclic** — a `link()` that would close a cycle is refused on the spot, with the cycle path
   reported, so the graph can always be ordered;
@@ -67,23 +66,10 @@ class DependencyGraph[Node: Hashable]:
 
     _dependencies: dict[Node, set[Node]]
     _dependents: dict[Node, set[Node]]
-    _revision: int
 
     def __init__(self) -> None:
         self._dependencies = {}
         self._dependents = {}
-        self._revision = 0
-
-    @property
-    def revision(self) -> int:
-        """Bumped by every accepted change: derived plans and caches invalidate on it."""
-        return self._revision
-
-    def __contains__(self, node: object) -> bool:
-        return node in self._dependencies
-
-    def __len__(self) -> int:
-        return len(self._dependencies)
 
     def nodes(self) -> tuple[Node, ...]:
         """The declared nodes, in declaration order."""
@@ -107,7 +93,6 @@ class DependencyGraph[Node: Hashable]:
         self._dependents[node] = set()
         for dependency in dependencies:
             self._connect(node, dependency)
-        self._revision += 1
 
     def remove(self, node: Node) -> None:
         """Drop ``node`` and every edge touching it; refused while something depends on it."""
@@ -119,7 +104,6 @@ class DependencyGraph[Node: Hashable]:
             self._dependents[dependency].discard(node)
         del self._dependencies[node]
         del self._dependents[node]
-        self._revision += 1
 
     def link(self, node: Node, dependency: Node) -> None:
         """Make ``node`` need ``dependency``: one edge, both already declared."""
@@ -129,29 +113,11 @@ class DependencyGraph[Node: Hashable]:
         if dependency in self._dependencies[node]:
             raise ValueError(f"{node!r} already depends on {dependency!r}")
         self._connect(node, dependency)
-        self._revision += 1
 
     def dependencies(self, node: Node) -> frozenset[Node]:
         """What ``node`` needs — direct edges only."""
         self._require_declared(node)
         return frozenset(self._dependencies[node])
-
-    def dependents(self, node: Node) -> frozenset[Node]:
-        """Who needs ``node`` — the reverse adjacency, which `TopologicalSorter` leaves to the caller."""
-        self._require_declared(node)
-        return frozenset(self._dependents[node])
-
-    def downstream(self, node: Node) -> frozenset[Node]:
-        """Who breaks if ``node`` goes away: the transitive closure of ``dependents``."""
-        self._require_declared(node)
-        found: set[Node] = set()
-        pending = list(self._dependents[node])
-        while pending:
-            current = pending.pop()
-            if current not in found:
-                found.add(current)
-                pending.extend(self._dependents[current])
-        return frozenset(found)
 
     def order(self) -> tuple[Node, ...]:
         """Loading order: dependencies first."""
