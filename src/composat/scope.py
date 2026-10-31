@@ -1,11 +1,38 @@
+"""Effects and the scope that holds them: what a lifetime registers, and how it is released.
+
+An effect is a callable that releases something — a socket, a directory, a lease — registered with a
+scope that promises to call it exactly once, last-registered first. Closing the scope releases
+everything it still holds; a :class:`Revoke` releases everything registered after a checkpoint and
+leaves what came before.
+
+The scope also owns an epoch's ends: :meth:`EffectScope.dispose` closes it for good and
+:meth:`EffectScope.reopen` answers the scope a new epoch starts with.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Protocol
 
 type Disposable = Callable[[], object | Awaitable[object]]
 type Revoke = Callable[[], Awaitable[None]]
+
+
+class Reclaimable(Protocol):
+    """Somewhere an effect can be registered: the seam a resolver receives.
+
+    A resolver that hands back something with a lifetime shorter than the assembly's says who
+    releases it by registering the release here, and ``put`` is the whole of what it may ask for.
+    The seam stays this narrow so that it holds whatever the scope is eventually swapped for.
+    """
+
+    def put(self, effect: Disposable, /) -> Revoke:
+        """Register ``effect``, and answer the call that releases everything from here on."""
+        ...
 
 
 def name_of(effect: Disposable) -> str:
@@ -13,9 +40,9 @@ def name_of(effect: Disposable) -> str:
 
     A function or a bound method answers with its own name; a ``partial`` takes the name of the
     callable it wraps, since that is where the work happens; anything else callable answers with its
-    type's name, which for a lambda is ``<lambda>``. Names are reported rather than the effects
-    themselves because an effect is a promise that something gets released exactly once — handing it
-    out would let a reader release it a second time.
+    type's name, which for a lambda is ``<lambda>``. Views report names because an effect is a
+    promise that something gets released exactly once, and a reader holding the callable would hold a
+    second chance to release it.
     """
     target: object = effect
     while isinstance(target, partial):
@@ -40,14 +67,10 @@ class EffectScope:
     def effects(self) -> tuple[str, ...]:
         """The name of every effect this scope still holds, oldest first.
 
-        "Still holds" is the whole of what it answers: a segment released by a :class:`Revoke` is
-        gone from the answer, an effect a cancellation left behind is still in it, and a scope that
-        has finished recycling answers with nothing. That makes the mid-disposal reading useful in
-        the one case it matters — what a failure left undone.
-
-        It reports names rather than the effects themselves on purpose (:func:`name_of`): an effect
-        is a promise that something is released exactly once, so a view that handed one out would be
-        handing out a second chance to release it.
+        "Still holds" is the whole of the answer: a segment released by a :class:`Revoke` is gone
+        from it, an effect a cancellation left behind is still in it, and a scope that finished
+        recycling answers with nothing. That makes the mid-disposal reading useful in the one case it
+        matters — what a failure left undone.
         """
         return tuple(name_of(effect) for effect in self._stack)
 
@@ -86,12 +109,10 @@ class EffectScope:
     async def dispose(self) -> None:
         """Recycle every effect, last first; from the first call on the scope is closed to ``put()``.
 
-        Sealing belongs to *asking* for disposal rather than to finishing it. A cancellation
-        releases the disposal so that a later call can finish it (the effects a cancellation left
-        behind are still recycled then), and the scope stays closed to registration all the same:
-        ``put()`` raises from the moment this is called, whether the disposal goes through or is
-        cancelled and left for a retry. That is what an epoch needs — a scope on its way out stops
-        collecting effects, so a retry has the whole of the leftover work in view.
+        Sealing belongs to *asking* for disposal rather than to finishing it, which is what gives a
+        cancelled disposal a retry: the effects it left behind are still recycled by the next call,
+        and the scope has been closed to registration since the first one. An epoch on its way out
+        stops collecting effects, so a retry has the whole of the leftover work in view.
         """
         self._closed = True
         if self._dispose_task is not None:
@@ -106,4 +127,17 @@ class EffectScope:
 
     @property
     def dead(self) -> bool:
+        """Whether this scope has nothing left to give: its disposal finished."""
         return self._dispose_task is not None and self._dispose_task.done()
+
+    async def reopen(self) -> EffectScope:
+        """Close this scope, and answer the fresh one the next epoch starts with.
+
+        A new epoch starts a new scope, so anything still holding the old one keeps reading the truth
+        about it: closed, and drained. A cleared scope would let that holder collect into another
+        epoch's bookkeeping and release an effect twice.
+
+        This is the whole of what reloading does to an instance's effects.
+        """
+        await self.dispose()
+        return EffectScope()
