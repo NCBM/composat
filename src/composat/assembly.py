@@ -1,8 +1,14 @@
-"""The instances this process has up, and the rule a requirement is answered by.
+"""The instances this process has up, the rule a requirement is answered by, and what a batch reports.
 
 Driving a component through its states is the manager's job, and deciding what is declared is the
 registry's; what is here is the table the two meet in — one instance per key — and the answer a
 declared requirement reads out of it.
+
+A batch that comes up short is reported (:class:`AssemblyResult`) rather than raised: one tenant's
+broken configuration stays that tenant's problem, and the call site reads which keys failed with
+what. Asking for the other reading — a batch that is atomic — is a request, and that one raises. A
+swap reports the same way (:class:`Replacement`), because a replacement that landed with a dependant
+complaining is neither an unchanged key nor a failed swap.
 
 The rule is a function of the table rather than a method of the thing that fills it
 (:func:`default_rule`), and that is a reading rather than a style. A requirement is answered from
@@ -22,6 +28,7 @@ table nothing writes to.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from .component import Component, RequirementResolver
 from .errors import ServiceNotUpError
@@ -29,6 +36,49 @@ from .identity import ComponentKey
 from .registry import ComponentRegistry
 from .scope import Reclaimable
 from .spec import RequirementSpec
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyResult:
+    """What a batch did: the keys it carried through, and the ones that failed, with their errors.
+
+    A key the batch left alone is in neither tuple — stopping a key that was never up has an empty
+    report about it, and a batch told to do nothing reports exactly that.
+
+    Reporting rather than raising is the default reading: one tenant's broken configuration stays
+    that tenant's problem. A batch that asks to be atomic is the other reading, and it raises instead
+    of answering with this.
+    """
+
+    completed: tuple[ComponentKey, ...] = ()
+    failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+
+    @property
+    def ok(self) -> bool:
+        """Whether every key the batch touched went through."""
+        return not self.failed
+
+
+@dataclass(frozen=True, slots=True)
+class Replacement:
+    """What a swap left behind: the instance the key answers with, and the dependants that complained.
+
+    The two are reported together because a swap has two outcomes that are not each other's
+    negation: ``failed`` being non-empty does *not* mean the replacement did not land. The key
+    answers with ``instance`` either way — the old instance is gone by the time this is handed
+    back — and what a dependant's ``provider_changed`` did about being told is a separate fact.
+
+    ``failed`` is keyed by the *dependant*, not by the replaced key: one hook that raises is not a
+    reason for the others to stay uninformed, so the map is what all of them said.
+    """
+
+    instance: Component
+    failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+
+    @property
+    def ok(self) -> bool:
+        """Whether the swap landed and every dependant was told."""
+        return not self.failed
 
 
 def default_rule(
@@ -71,8 +121,11 @@ class Assembly:
     """The instances this process has up, and the rule they reach each other by.
 
     One instance per key: an identity may have several (a tenant each), and each answers at its own
-    qualifier. What is here so far is the table and the rule over it; the batch operations that fill
-    the table arrive with the manager, which is what drives one component through its states.
+    qualifier. What is here so far is the table and the rule over it: the verbs that change the table
+    — bringing a batch up, taking it back down, swapping one instance behind its key — arrive with
+    the manager, which is what drives a component through its states. A batch answers with an
+    :class:`AssemblyResult` and a swap with a :class:`Replacement`, both of which say what happened
+    rather than raise, so a caller can tell a batch that came up short from one that never ran.
     """
 
     _registry: ComponentRegistry
@@ -104,3 +157,20 @@ class Assembly:
         given once and a second one would leave the instances attached earlier pointing at the first.
         """
         return self._rule
+
+    def instance(self, key: ComponentKey) -> Component | None:
+        """The instance up under ``key``, or ``None`` when nothing is.
+
+        This is the reading that answers "what does that key answer *now*", which is a read rather
+        than a history: subscribing to a running assembly replays nothing, and the current picture is
+        this method together with :meth:`keys`.
+        """
+        return self._up.get(key)
+
+    def instances(self) -> tuple[Component, ...]:
+        """Every instance that is up, in the order it came up."""
+        return tuple(self._up.values())
+
+    def keys(self) -> tuple[ComponentKey, ...]:
+        """Every key that is up, in the order it came up."""
+        return tuple(self._up)

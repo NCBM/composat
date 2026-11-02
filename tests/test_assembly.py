@@ -14,10 +14,12 @@ import pytest
 
 from composat import (
     Assembly,
+    AssemblyResult,
     Component,
     ComponentKey,
     ComponentRegistry,
     EffectScope,
+    Replacement,
     RequirementResolver,
     ServiceNotUpError,
     UnboundServiceError,
@@ -130,3 +132,53 @@ class TestAssembly:
 
         with pytest.raises(ServiceNotUpError):
             _ = assembly.rule(at(Engine), asking(Store), EffectScope())
+
+    def test_nothing_is_up_in_an_assembly_that_was_handed_nothing(self) -> None:
+        assembly = Assembly(ComponentRegistry())
+
+        assert assembly.keys() == ()
+        assert assembly.instances() == ()
+        assert assembly.instance(at(Store)) is None
+
+    def test_what_is_up_comes_back_in_the_order_it_came_up(self) -> None:
+        store, engine = Store(), Engine()
+        instances = {at(Store, "tenant-a"): store, at(Engine, "tenant-a"): engine}
+        assembly = Assembly(ComponentRegistry(), up=instances)
+
+        assert assembly.keys() == tuple(instances)
+        assert assembly.instances() == (store, engine)
+        assert assembly.instance(at(Engine, "tenant-a")) is engine
+        assert assembly.instance(at(Engine, "tenant-b")) is None
+
+
+class TestReport:
+    def test_a_batch_that_left_every_key_alone_is_ok(self) -> None:
+        result = AssemblyResult()
+
+        assert result.ok
+        assert result.completed == ()
+        assert result.failed == {}
+
+    def test_a_batch_that_came_up_short_is_not(self) -> None:
+        failed = {at(Store): RuntimeError("no dsn")}
+        result = AssemblyResult((at(Engine),), failed)
+
+        assert not result.ok
+        assert result.completed == (at(Engine),)
+        assert result.failed == failed
+
+    def test_a_swap_nobody_complained_about_is_ok(self) -> None:
+        replacement = Replacement(Engine())
+
+        assert replacement.ok
+        assert replacement.failed == {}
+
+    def test_a_complaining_dependant_is_reported_apart_from_the_instance(self) -> None:
+        instance = Engine()
+        failed = {at(Store): RuntimeError("would not re-read")}
+        replacement = Replacement(instance, failed)
+
+        # The swap landed either way: ``failed`` is about the dependants, not about the key.
+        assert not replacement.ok
+        assert replacement.instance is instance
+        assert replacement.failed == failed

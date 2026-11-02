@@ -3,11 +3,14 @@
 The rewrite is rebuilding the package layer by layer. What is here so far is the foundation the
 rest stands on — identities and keys, effect scopes, the component base and what it declares, the
 dependency graph, the registry of declarations, and the assembly's seam: the table of what is up,
-and the rule a requirement is answered by. The batch operations over that table, and the loader,
-land on top of these; see ``archive/pre-rewrite`` for the design they are being rebuilt from.
+the rule a requirement is answered by, and the report a batch or a swap hands back. The operations
+over that table, and the loader, land on top of these; see ``archive/pre-rewrite`` for the design
+they are being rebuilt from.
 """
 
 from .assembly import Assembly as Assembly
+from .assembly import AssemblyResult as AssemblyResult
+from .assembly import Replacement as Replacement
 from .assembly import default_rule as default_rule
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
 from .component import Component as Component
