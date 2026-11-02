@@ -9,6 +9,7 @@ while they run. The loader lands on top of these; see ``archive/pre-rewrite`` fo
 are being rebuilt from.
 """
 
+from . import context as context
 from .assembly import Assembly as Assembly
 from .assembly import AssemblyResult as AssemblyResult
 from .assembly import Event as Event
@@ -19,6 +20,7 @@ from .component import Component as Component
 from .component import RequirementResolver as RequirementResolver
 from .component import reopen_epoch as reopen_epoch
 from .component import require as require
+from .context import CallContext as CallContext
 from .dependency import DependencyCycleError as DependencyCycleError
 from .dependency import DependencyError as DependencyError
 from .dependency import DependencyGraph as DependencyGraph
