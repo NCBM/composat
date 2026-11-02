@@ -9,11 +9,17 @@ A component is business methods. The framework reads three things off the class:
 
 Everything else an instance carries is the application's: an annotated plain resource, an attribute
 with no annotation, a private cache. :meth:`Component._classify` is the one place the line is drawn.
+
+What the framework *does* to an instance is here too, as functions rather than methods — :func:`attach`
+and :func:`read`: an operation an application must not be able to replace is not offered to it as a
+member. ``@final`` on a method of the base answers the same question after the fact, refusing an
+extension the declaration had already invited.
 """
 
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from typing import Annotated, ClassVar, Protocol, cast, get_args, get_origin, get_type_hints
 
 from .errors import UnboundRequirementError
@@ -39,6 +45,20 @@ class RequirementResolver(Protocol):
     def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
         """The instance answering ``requirement`` for ``key``, registered on ``effects`` if new."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class Binding:
+    """Where one instance's requirements are read from: the key it answers at, and the rule it asks.
+
+    Written by :func:`attach` before ``load`` and read by :func:`read`, which is the whole of what the
+    attribute is for. It is a value rather than two attributes on the instance so that the pair cannot
+    be half-written, and public rather than private so that a hook can say which tenant it is serving
+    (``self.binding.key``) without the framework keeping a second copy somewhere.
+    """
+
+    key: ComponentKey
+    rule: RequirementResolver
 
 
 LIFECYCLE_HOOKS = ("load", "unload", "reload", "enable", "disable", "drain")
@@ -69,7 +89,7 @@ class _Bound:
     def __get__(self, instance: Component | None, owner: type[object] | None = None) -> object:
         if instance is None:
             return self.spec
-        return instance.resolve(self.spec)
+        return read(instance, self.spec)
 
     def __set__(self, instance: Component, value: object) -> None:
         raise AttributeError(f"{self.spec.name} resolves to the instance that answers it, and is not assignable")
@@ -151,12 +171,14 @@ def _field_names(cls: type[object]) -> frozenset[str]:
 class Component:
     """A component: business methods, plus the declarations the framework reads.
 
-    No metaclass and no abstract method. A component with nothing to load and nothing to unload is a
-    legal component: :meth:`capabilities` answers what the state machine drives from what the type
-    writes, and driving nothing is a no-op.
+    A component is a plain class. Its identity is the path it was written at — the module and the
+    qualified name there — which is what a reload keeps while replacing the class object. It declares
+    the six lifecycle hooks, and answers nothing for any hook until a type writes its own:
+    :meth:`capabilities` reports the ones a type writes, and a component that writes none is one
+    nothing drives.
 
-    The class body states no identity: who a component is, is where it was written — a path a reload
-    keeps and a class object it replaces.
+    The framework's operations on an instance are functions in this module: :func:`attach` gives it
+    the key and the rule its requirements are read by, :func:`read` answers one of them.
     """
 
     #: The requirements this type declares, once classified; ``None`` until then. A class that has
@@ -169,8 +191,9 @@ class Component:
 
     effect_scope: EffectScope
 
-    _resolver: RequirementResolver | None = None
-    _key: ComponentKey | None = None
+    #: Where this instance's requirements are read from, written by :func:`attach` before ``load``.
+    #: ``None`` until then, which is what :func:`read` reports as an unbound requirement.
+    binding: Binding | None = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Freeze the field names, and classify now when every name already resolves.
@@ -264,30 +287,6 @@ class Component:
             declared[name] = spec
         cls._declared = declared
 
-    def attach(self, key: ComponentKey, resolver: RequirementResolver) -> None:
-        """Point this instance's declared requirements at ``key``, resolved by ``resolver``.
-
-        The assembly that brings the instance up calls this before ``load`` and after the instance is
-        reachable, so a hook reading a requirement reads something already there. The instance
-        resolves a question about itself against the address it was attached at.
-        """
-        self._key = key
-        self._resolver = resolver
-
-    def resolve(self, requirement: RequirementSpec) -> object:
-        """What a declared requirement reads as: the instance answering it at this instance's key.
-
-        The one place a requirement turns into an instance, reached from the descriptor's ``__get__``.
-        Whatever a resolver registers is answered to this instance's epoch, so a field read while the
-        component is loaded belongs to the epoch it was read in and is released when that epoch
-        closes. Reading during ``unload`` is the last moment the scope takes effects.
-        """
-        resolver = self._resolver
-        key = self._key
-        if resolver is None or key is None:
-            raise UnboundRequirementError(self, requirement.name)
-        return resolver(key, requirement, self.effect_scope)
-
     async def load(self) -> None:
         pass
 
@@ -322,3 +321,32 @@ class Component:
         type writes it or not, and the base's answer is to do nothing.
         """
         _ = requirement
+
+
+def attach(component: Component, key: ComponentKey, resolver: RequirementResolver) -> None:
+    """Point ``component``'s declared requirements at ``key``, resolved by ``resolver``.
+
+    The assembly that brings the instance up calls this before ``load`` and after the instance is
+    reachable, so a hook reading a requirement reads something already there. The address is kept as
+    ``component.binding``, so a hook that has to say which tenant it is serving can read it back.
+    """
+
+    component.binding = Binding(key, resolver)
+
+
+def read(component: Component, requirement: RequirementSpec) -> object:
+    """What ``requirement`` reads as on ``component``: the instance answering it at its own key.
+
+    The one place a requirement turns into an instance, reached from the descriptor's ``__get__``.
+    Whatever a resolver registers is answered to this instance's epoch, so a field read while the
+    component is loaded belongs to the epoch it was read in and is released when that epoch closes.
+    Reading during ``unload`` is therefore the last moment the scope takes effects.
+
+    ``UnboundRequirementError`` when nothing is attached: an instance built and used by hand, or read
+    from a hook of something that went through no assembly.
+    """
+
+    binding = component.binding
+    if binding is None:
+        raise UnboundRequirementError(component, requirement.name)
+    return binding.rule(binding.key, requirement, component.effect_scope)

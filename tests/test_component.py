@@ -12,7 +12,7 @@ from typing import Annotated, Protocol
 import pytest
 
 from composat import ComponentKey, EffectScope, Reclaimable, UnboundRequirementError
-from composat.component import Component
+from composat.component import Component, attach
 from composat.spec import RequirementSpec
 
 
@@ -100,7 +100,7 @@ class TestReadingARequirement:
             return store
 
         key = ComponentKey(Reader.identity())
-        reader.attach(key, resolver)
+        attach(reader, key, resolver)
 
         assert reader.store is store
         assert asked == [(key, RequirementSpec("store", Store))]
@@ -111,9 +111,31 @@ class TestReadingARequirement:
             return Store()
 
         reader = Reader()
-        reader.attach(ComponentKey(Reader.identity()), resolver)
+        attach(reader, ComponentKey(Reader.identity()), resolver)
         with pytest.raises(AttributeError, match="not assignable"):
             reader.store = Store()  # type: ignore[assignment]
+
+    def test_the_framework_s_operations_are_not_members_of_the_type(self) -> None:
+        # What the framework does to an instance is a function in the module, so there is nothing for
+        # an application to override: a member by that name would be its own method, not the read.
+        assert not hasattr(Component, "attach")
+        assert not hasattr(Component, "resolve")
+
+    def test_a_member_named_like_the_read_path_does_not_take_it_over(self) -> None:
+        class Loud(Reader):
+            def resolve(self, requirement: RequirementSpec) -> object:
+                raise AssertionError("the read path is not dispatch on the component")
+
+        store = Store()
+
+        def resolver(key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable) -> object:
+            _ = key, requirement, effects
+            return store
+
+        loud = Loud()
+        attach(loud, ComponentKey(Loud.identity()), resolver)
+
+        assert loud.store is store
 
 
 class TestCapabilities:

@@ -58,8 +58,8 @@ class UnboundRequirementError(RuntimeError):
 
     A field annotation is a *requirement*: the type says the instance will be handed one, so reading
     the field is as plain as reading any attribute. The assembly makes that true, through
-    ``Component.attach``, before ``load`` — an instance reading one of its own requirements in a hook
-    reads something already bound.
+    ``composat.component.attach``, before ``load`` — an instance reading one of its own requirements
+    in a hook reads something already bound.
 
     This error means the instance ran ahead of the binding: constructed and used by hand, or read from
     a hook of something that went through no assembly. It is raised only for a name the type
