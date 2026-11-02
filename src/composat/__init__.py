@@ -4,12 +4,14 @@ The rewrite is rebuilding the package layer by layer. What is here so far is the
 rest stands on — identities and keys, effect scopes, the component base and what it declares, the
 state machine and the manager that drives it, the dependency graph, the registry of declarations,
 and the assembly: the table of what is up, the rule a requirement is answered by, the batch verbs
-that fill the table and empty it, and the report they hand back. The loader lands on top of these;
-see ``archive/pre-rewrite`` for the design they are being rebuilt from.
+that fill the table and empty it, the report they hand back, and the stream of moves they report
+while they run. The loader lands on top of these; see ``archive/pre-rewrite`` for the design they
+are being rebuilt from.
 """
 
 from .assembly import Assembly as Assembly
 from .assembly import AssemblyResult as AssemblyResult
+from .assembly import Event as Event
 from .assembly import Replacement as Replacement
 from .assembly import default_rule as default_rule
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS

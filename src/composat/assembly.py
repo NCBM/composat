@@ -10,6 +10,14 @@ what. Asking for the other reading — a batch that is atomic — is a request, 
 swap reports the same way (:class:`Replacement`), because a replacement that landed with a dependant
 complaining is neither an unchanged key nor a failed swap.
 
+**What the table does is reported as it happens.** An instance's own control reports each move it
+commits, and this assembly adds the key and the generation and hands the result to whoever
+subscribed (:meth:`Assembly.observe`). Those events are *staged* inside the instance's lock and
+*delivered* outside it, so an application's handler never runs inside a move — one that awaited
+there would be waiting for the lock it is called under. A handler's failure is reported
+(:attr:`AssemblyResult.observer_failures`) rather than raised, because an observer that could stop a
+batch would be a decider, and deciding belongs to admission and to the hooks.
+
 **A batch is closed over what its keys need.** ``start(App:tenant-a)`` brings up what ``App``
 declares, transitively, each dependency at the qualifier of the key that named it: instances of one
 identity are told apart by the qualifier, so a reader served by one tenant is answered by that
@@ -42,8 +50,11 @@ table nothing writes to.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping, Sequence
+import contextlib
+import contextvars
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 
 from .component import Component, RequirementResolver, attach
 from .errors import ServiceNotUpError
@@ -52,12 +63,47 @@ from .manager import ComponentManager
 from .registry import ComponentRegistry, Declaration
 from .scope import Reclaimable
 from .spec import RequirementSpec
-from .state import ComponentState
+from .state import Committed, ComponentState, Operation, Unsubscribe
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """One move, as this assembly committed it: which key, which instance, and the two states.
+
+    ``instance`` is the generation, and that is why it is carried. A swap leaves the retired
+    instance's teardown arriving at the same key it left, so ``assembly.instance(event.key) is
+    event.instance`` is the whole reading of "is this still the one the key answers with" — a number
+    would be a second table to look it up in.
+
+    ``undone`` is a hook putting its own step back: the arrival was reported when it was committed,
+    so the state the instance does not rest in is corrected rather than left standing. Nothing else
+    about the record distinguishes a rollback — the states say which way it went.
+    """
+
+    key: ComponentKey
+    instance: Component
+    operation: Operation
+    origin: ComponentState
+    arrival: ComponentState
+    undone: bool = False
+
+
+type Observer = Callable[[Event], None]
+"""What an assembly calls for each event: the record, once, in subscription order, between moves."""
+
+_STAGED: contextvars.ContextVar[list[Event] | None] = contextvars.ContextVar("composat_staged_events", default=None)
+"""What the call now running has staged and not yet delivered.
+
+A ``ContextVar`` rather than an attribute, so two batches running at once hand out their own events
+and report their own failures: a task inherits a copy of the context, and the copy a verb makes is
+made when the verb starts. ``None`` outside a verb — a move this assembly did not order is not its
+to report, and an instance driven straight through the manager is exactly that case.
+"""
 
 
 @dataclass(frozen=True, slots=True)
 class AssemblyResult:
-    """What a batch did: the keys it carried through, and the ones that failed, with their errors.
+    """What a batch did: the keys it carried through, the ones that failed, and what an observer said.
 
     A key the batch left alone is in neither tuple — stopping a key that was never up has an empty
     report about it, and a batch told to do nothing reports exactly that.
@@ -65,10 +111,17 @@ class AssemblyResult:
     Reporting rather than raising is the default reading: one tenant's broken configuration stays
     that tenant's problem. A batch that asks to be atomic is the other reading, and it raises instead
     of answering with this.
+
+    ``observer_failures`` is deliberately not ``failed``: that map is the errors of hooks, keyed by
+    the component they belong to, and a handler that could not write its line down is not a component
+    that failed. Each entry is the event it was told about and what it said, so a sink can be blamed
+    for exactly what it saw — and ``ok`` stays a reading about the batch rather than about the
+    reporting, because a batch whose keys all came up did come up.
     """
 
     completed: tuple[ComponentKey, ...] = ()
     failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+    observer_failures: tuple[tuple[Event, BaseException], ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -88,10 +141,15 @@ class Replacement:
     ``failed`` is keyed by whoever complained: a dependant whose ``provider_changed`` raised, and the
     replaced key itself when the instance that was taken out would not let go. One hook that raises is
     not a reason for the others to stay uninformed, so the map is what all of them said.
+
+    ``observer_failures`` carries what an observer said, for the same reason a batch carries it: a
+    swap that landed with the reporting broken is neither a clean swap nor a failed one, and the
+    caller has nowhere else to read it from.
     """
 
     instance: Component
     failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+    observer_failures: tuple[tuple[Event, BaseException], ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -167,12 +225,16 @@ class Assembly:
     Which instance answers a requirement is not decided here but in the rule this assembly was handed,
     and that rule reads this same table: an instance that came up a moment ago is what the next field
     read gets, with nothing refreshed.
+
+    What it does to the table is watched as well as reported: :meth:`observe` subscribes to the
+    stream, and every event names the key, the generation, and the two states the move spans.
     """
 
     _registry: ComponentRegistry
     _manager: ComponentManager
     _up: dict[ComponentKey, Component]
     _rule: RequirementResolver
+    _subscribers: list[Observer]
 
     def __init__(
         self,
@@ -194,6 +256,7 @@ class Assembly:
         self._manager = ComponentManager() if manager is None else manager
         self._up = {} if up is None else up
         self._rule = default_rule(registry, self._up) if rule is None else rule
+        self._subscribers = []
 
     @property
     def rule(self) -> RequirementResolver:
@@ -222,6 +285,31 @@ class Assembly:
         """Every key that is up, in the order it came up."""
         return tuple(self._up)
 
+    def observe(self, observer: Observer) -> Unsubscribe:
+        """Notice what this assembly does to the keys it holds, as it does it.
+
+        The one place an application subscribes. An instance's own control reports its moves but
+        knows no key, so a handler that needs to know *which* key moved — and which generation of it
+        — is served here.
+
+        What a handler is handed is what happened, once, in subscription order, and between moves
+        rather than inside one: it may therefore block the batch but never a hook. It is a report and
+        not a request, so it cannot refuse a move — and it must not drive the assembly either, because
+        a handler runs inside the batch it is reporting and a move started from one would be racing
+        its own subject. One that has to await has a queue to put the event in: ``put_nowait`` is what
+        a handler can do, and the task that drains the queue is the application's to own.
+
+        A handler that raises does not stop the others: the failure is reported to whoever ran the
+        batch (:attr:`AssemblyResult.observer_failures`).
+        """
+        self._subscribers.append(observer)
+
+        def unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._subscribers.remove(observer)
+
+        return unsubscribe
+
     async def start(self, *keys: ComponentKey, enable: bool = True, strict: bool = False) -> AssemblyResult:
         """Build and bring ``keys`` up, requirements first, and report what happened.
 
@@ -235,28 +323,37 @@ class Assembly:
         up. ``strict`` asks for the other reading: the keys *this call* brought up are taken back
         down, in reverse, and the original failure is re-raised. A cancelled batch has no result to
         report, so it takes back what it brought up and lets the ``CancelledError`` go on.
+
+        Events are delivered per key, as each one finishes coming up, so a batch that is still running
+        is already readable. On the two paths that raise there is no result to carry a handler's
+        failure, and it goes the way of the exception.
         """
         batch = _in_order(self._closed(self._require_startable(keys)), self._registry.order())
         completed: list[ComponentKey] = []
         failed: dict[ComponentKey, BaseException] = {}
-        try:
-            for key in batch:
-                try:
-                    await self._bring_up(key, enable=enable)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    # One component's failure is the batch's business, not the call's: it is reported
-                    # and the rest are still brought up.
-                    failed[key] = error
-                    if strict:
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            try:
+                for key in batch:
+                    try:
+                        await self._bring_up(key, enable=enable)
+                    except asyncio.CancelledError:
                         raise
-                    continue
-                completed.append(key)
-        except (asyncio.CancelledError, Exception):
-            await self._retract_all(completed)
-            raise
-        return AssemblyResult(tuple(completed), failed)
+                    except Exception as error:
+                        # One component's failure is the batch's business, not the call's: it is
+                        # reported and the rest are still brought up.
+                        failed[key] = error
+                        if strict:
+                            raise
+                    else:
+                        completed.append(key)
+                    finally:
+                        watched.extend(self._deliver(staged))
+            except (asyncio.CancelledError, Exception):
+                await self._retract_all(completed)
+                _ = self._deliver(staged)
+                raise
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
 
     async def stop(self, *keys: ComponentKey) -> AssemblyResult:
         """Take ``keys`` back down, the instances that need them going first.
@@ -266,16 +363,24 @@ class Assembly:
         stop(*assembly.keys())`` the teardown a caller can run without asking first. Ordering comes
         from the registry, and everything else from the instances this assembly holds, so a key whose
         declaration was withdrawn on the way is still taken down.
+
+        Events are delivered per key, as each one finishes going down, so a shutdown that is still
+        running is already readable.
         """
         completed: list[ComponentKey] = []
         failed: dict[ComponentKey, BaseException] = {}
-        for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
-            error = await self._retract(key)
-            if error is None:
-                completed.append(key)
-            else:
-                failed[key] = error
-        return AssemblyResult(tuple(completed), failed)
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
+                try:
+                    error = await self._retract(key)
+                finally:
+                    watched.extend(self._deliver(staged))
+                if error is None:
+                    completed.append(key)
+                else:
+                    failed[key] = error
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
 
     async def replace(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
         """Put a new instance behind ``key``, without a gap in what the key answers.
@@ -295,6 +400,11 @@ class Assembly:
         instances and nothing wider. What a dependant says about being told is *reported*, not raised —
         the swap has landed either way — and so is an old instance whose ``unload`` refuses: it is down
         regardless (that is what the state machine commits), and the map says which key complained.
+
+        Both generations are reported, and both at this key: the new one's as it comes up, and the
+        quiet retreat of the old one afterwards. ``event.instance`` is what tells the two apart, so a
+        ledger sees the hand-over instead of a gap, and a handler that only wants the current answer
+        asks the table (``instance(key) is event.instance``).
         """
         if key not in self._up:
             raise ValueError(f"nothing is up under {key}")
@@ -305,18 +415,91 @@ class Assembly:
         old = self._up[key]
         instance = declaration.build()
         attach(instance, key, self._rule)
+        self._watch(key, instance)
+        failed: dict[ComponentKey, BaseException] = {}
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            try:
+                try:
+                    await self._manager.migrate(instance, _level_of(old.state.state))
+                except (asyncio.CancelledError, Exception):
+                    self._registry.redeclare(superseded)
+                    _ = await self._shutdown(instance)
+                    raise
+                self._up[key] = instance
+                failed = await self._notify(key.identity, excluding=key)
+                error = await self._shutdown(old)
+                if error is not None:
+                    failed[key] = error
+            finally:
+                watched.extend(self._deliver(staged))
+        return instance if not failed and not watched else Replacement(instance, failed, tuple(watched))
+
+    @contextlib.contextmanager
+    def _staging(self) -> Generator[list[Event], None, None]:
+        """Collect the events this call stages, and stop collecting when it is done.
+
+        One list per call rather than one per assembly, so two batches running at once deliver their
+        own events and report their own handler failures. The list is what a verb hands to
+        :meth:`_deliver` as it goes, so a batch that is still running has already reported what it
+        finished.
+        """
+        staged: list[Event] = []
+        token = _STAGED.set(staged)
         try:
-            await self._manager.migrate(instance, _level_of(old.state.state))
-        except (asyncio.CancelledError, Exception):
-            self._registry.redeclare(superseded)
-            _ = await self._shutdown(instance)
-            raise
-        self._up[key] = instance
-        failed = await self._notify(key.identity, excluding=key)
-        error = await self._shutdown(old)
-        if error is not None:
-            failed[key] = error
-        return instance if not failed else Replacement(instance, failed)
+            yield staged
+        finally:
+            _STAGED.reset(token)
+
+    def _watch(self, key: ComponentKey, instance: Component) -> None:
+        """Report this instance's moves as events at ``key``, for as long as the instance exists.
+
+        Nothing ever unsubscribes: the subscription lives on the instance's own control and goes when
+        the instance does. That is what makes a swap reportable in full — while the old generation is
+        being taken down the key may already answer with the new one, and both are in the list, so
+        both are reported and ``event.instance`` says which is which.
+        """
+        _ = instance.state.observe(partial(self._stage, key, instance))
+
+    def _stage(self, key: ComponentKey, instance: Component, committed: Committed) -> None:
+        """Take one committed move as an event.
+
+        Called under the instance's lock, so it only appends: nothing here may await, and nothing here
+        may fail on the instance's account. Outside a verb nothing is being collected, and an event
+        that no verb ordered is dropped — a move made straight through the manager is not this
+        assembly's doing.
+        """
+        staged = _STAGED.get()
+        if staged is not None:
+            staged.append(
+                Event(
+                    key,
+                    instance,
+                    committed.operation,
+                    committed.origin,
+                    committed.arrival,
+                    committed.undone,
+                )
+            )
+
+    def _deliver(self, staged: list[Event]) -> tuple[tuple[Event, BaseException], ...]:
+        """Hand the staged events to the subscribers, outside every lock, and empty the stage.
+
+        Subscription order and one event at a time, because a handler may keep a running account of
+        the batch and that account has an order. A handler that raises does not stop the rest: one
+        broken sink is not a reason for the others to stay uninformed, and what it said comes back to
+        the caller rather than being raised into the batch.
+        """
+        events = tuple(staged)
+        staged.clear()
+        failures: list[tuple[Event, BaseException]] = []
+        for event in events:
+            for observer in tuple(self._subscribers):
+                try:
+                    observer(event)
+                except Exception as error:  # noqa: BLE001 - a handler's failure is reported, not raised
+                    failures.append((event, error))
+        return tuple(failures)
 
     async def _notify(
         self,
@@ -415,10 +598,14 @@ class Assembly:
         what is up — this instance at this key included, which is what lets a component read its own
         field instead of missing. A failure takes it back down and forgets it, so a key that did not
         come up is reported as failed rather than as up.
+
+        It is watched before it loads, so the moves that bring it up are part of the report rather
+        than a silent preamble to it.
         """
         instance = self._registry.declaration(key).build()
         attach(instance, key, self._rule)
         self._up[key] = instance
+        self._watch(key, instance)
         try:
             await self._manager.migrate(instance, ComponentState.ENABLED if enable else ComponentState.LOADED)
         except (asyncio.CancelledError, Exception):

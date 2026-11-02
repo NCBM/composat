@@ -3,8 +3,8 @@
 The rule is exercised as a function over a table rather than through a running assembly, which is
 the whole point of it being one: what a field read gets is decided by the qualifier and by what is
 up, and neither needs a manager to test. What the assembly adds above that is the batch — which keys
-a call covers, the order they come up in, and what a key that fails leaves behind — so that is what
-its own cases are about.
+a call covers, the order they come up in, and what a key that fails leaves behind — and the report it
+hands out while it does any of it; so that is what its own cases are about.
 """
 
 from __future__ import annotations
@@ -20,10 +20,13 @@ from composat import (
     AssemblyResult,
     Component,
     ComponentKey,
+    ComponentManager,
     ComponentRegistry,
     ComponentState,
     Declaration,
     EffectScope,
+    Event,
+    Operation,
     Replacement,
     RequirementResolver,
     ServiceNotUpError,
@@ -291,6 +294,13 @@ def state_of(assembly: Assembly, key: ComponentKey) -> ComponentState:
     instance = assembly.instance(key)
     assert instance is not None, f"nothing is up under {key}"
     return instance.state.state
+
+
+def watching(assembly: Assembly) -> list[Event]:
+    """Subscribe, and answer the list the events land in as they are delivered."""
+    seen: list[Event] = []
+    _ = assembly.observe(seen.append)
+    return seen
 
 
 class TestClosure:
@@ -571,3 +581,154 @@ class TestSwapping:
         assert isinstance(result, Replacement)
         assert isinstance(result.failed[at(Sticky)], RuntimeError)
         assert assembly.instance(at(Sticky)) is result.instance
+
+
+class TestWhatIsReported:
+    def test_a_key_coming_up_is_reported_move_by_move(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        seen = watching(assembly)
+
+        result = run(assembly.start(at(Store)))
+
+        assert result.completed == (at(Store),)
+        assert [(event.key, event.operation, event.origin, event.arrival) for event in seen] == [
+            (at(Store), Operation.load, ComponentState.UNLOADED, ComponentState.LOADED),
+            (at(Store), Operation.enable, ComponentState.LOADED, ComponentState.ENABLED),
+        ]
+        assert all(event.instance is assembly.instance(at(Store)) for event in seen)
+        assert not any(event.undone for event in seen)
+
+    def test_what_a_key_needs_is_reported_at_the_key_it_came_up_at(self) -> None:
+        assembly = Assembly(
+            declaring(
+                Declaration(Hall, "tenant-a"),
+                Declaration(Vault, "tenant-a"),
+                Declaration(Store, "tenant-a"),
+            )
+        )
+        seen = watching(assembly)
+
+        _ = run(assembly.start(at(Hall, "tenant-a")))
+
+        # The closure comes up requirements first, and every instance is reported at its own key: a
+        # reader served at one qualifier is answered by the provider at that qualifier.
+        loads = [event.key for event in seen if event.operation is Operation.load]
+        assert loads == [at(Store, "tenant-a"), at(Vault, "tenant-a"), at(Hall, "tenant-a")]
+
+    def test_the_way_down_is_reported_as_it_happens(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        seen = watching(assembly)
+
+        _ = run(assembly.stop(at(Store)))
+
+        assert [event.operation for event in seen] == [Operation.drain, Operation.disable, Operation.unload]
+        assert [event.arrival for event in seen] == [
+            ComponentState.DRAINING,
+            ComponentState.LOADED,
+            ComponentState.UNLOADED,
+        ]
+
+    def test_a_swap_reports_both_generations_at_the_one_key(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        old = assembly.instance(at(Store))
+        seen = watching(assembly)
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        new = assembly.instance(at(Store))
+        assert [event.instance for event in seen] == [
+            new,
+            new,
+            old,
+            old,
+            old,
+        ], "the new generation comes up first, and the old one retreats after the key has moved"
+        assert {event.key for event in seen} == {at(Store)}
+        assert [event.operation for event in seen if event.instance is old] == [
+            Operation.drain,
+            Operation.disable,
+            Operation.unload,
+        ]
+
+    def test_a_step_a_hook_put_back_is_reported_as_undone(self) -> None:
+        assembly = Assembly(declaring(Declaration(Wobbly)))
+        seen = watching(assembly)
+
+        result = run(assembly.start(at(Wobbly)))
+
+        assert not result.ok
+        assert seen[-1].undone
+        assert (seen[-1].origin, seen[-1].arrival) == (ComponentState.LOADED, ComponentState.UNLOADED)
+
+    def test_a_handler_runs_between_moves_rather_than_inside_one(self) -> None:
+        # The promise a handler is entitled to: no instance lock is held, and nothing is being
+        # driven, so a handler cannot deadlock on the move that reported itself to it.
+        assembly = Assembly(declaring(Declaration(Store)))
+        observed: list[tuple[str | None, bool]] = []
+
+        def handler(event: Event) -> None:
+            observed.append((event.instance.state.pending, event.instance.state.lock.locked()))
+
+        _ = assembly.observe(handler)
+
+        _ = run(assembly.start(at(Store)))
+
+        assert observed == [(None, False), (None, False)]
+
+    def test_unsubscribing_stops_that_handler(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        seen = watching(assembly)
+        unsubscribe = assembly.observe(seen.append)
+
+        unsubscribe()
+        _ = run(assembly.start(at(Store)))
+
+        assert [event.operation for event in seen] == [Operation.load, Operation.enable]
+
+    def test_a_handler_that_raises_is_reported_apart_from_the_batch(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        seen: list[Event] = []
+
+        def complaining(event: Event) -> None:
+            raise RuntimeError("cannot write it down")
+
+        _ = assembly.observe(complaining)
+        _ = assembly.observe(seen.append)
+
+        result = run(assembly.start(at(Store)))
+
+        assert result.ok
+        assert result.completed == (at(Store),)
+        assert [event for event, _ in result.observer_failures] == seen
+        assert all(isinstance(error, RuntimeError) for _, error in result.observer_failures)
+
+    def test_a_swap_only_a_handler_complained_about_is_still_a_replacement(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        def complaining(event: Event) -> None:
+            raise RuntimeError("cannot write it down")
+
+        _ = assembly.observe(complaining)
+
+        result = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert isinstance(result, Replacement)
+        assert result.ok, "nothing a component was asked to do failed"
+        assert result.instance is assembly.instance(at(Store))
+        assert result.observer_failures
+
+    def test_a_move_this_assembly_did_not_order_is_not_reported(self) -> None:
+        # A subscription is to what the assembly does. An application that drives an instance itself
+        # is not asking for it to be reported, and nothing about that call is staged.
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        seen = watching(assembly)
+        instance = assembly.instance(at(Store))
+        assert instance is not None
+
+        run(ComponentManager().migrate(instance, ComponentState.LOADED))
+
+        assert seen == []
