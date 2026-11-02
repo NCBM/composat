@@ -12,7 +12,8 @@ from collections.abc import Coroutine
 
 import pytest
 
-from composat import Component, ComponentKey, NoCallContextError, Reclaimable, RequirementSpec
+from composat import Component, ComponentKey, NoCallContextError, Reclaimable, RequirementSpec, require
+from composat.component import attach
 from composat.context import current, current_or_none, open_call, put, resolve
 
 
@@ -26,6 +27,12 @@ class Store(Component):
 
 class Cache(Component):
     """A second leaf, so a nested call has somewhere else to point."""
+
+
+class Reader(Component):
+    """A component whose field is read, so a read has somewhere to happen."""
+
+    store: Store = require()
 
 
 def at(component: type[Component], instance: str = "") -> ComponentKey:
@@ -198,5 +205,40 @@ class TestWhatBelongsToTheCall:
         async def drive() -> None:
             async with open_call(at(Store), Recorder()) as first, open_call(at(Store), Recorder()) as second:
                 assert first.effects is not second.effects
+
+        run(drive())
+
+
+class TestWhatAFieldReadGets:
+    def test_a_field_read_answers_at_the_instance_s_key_even_inside_a_call(self) -> None:
+        rule = Recorder()
+        reader = Reader()
+        attach(reader, at(Reader), rule)
+
+        async def drive() -> None:
+            async with open_call(at(Store, "tenant-a"), rule):
+                _ = reader.store
+                assert rule.asked[-1][0] == at(Reader), "the call says whose work it is, not who is asking"
+
+        run(drive())
+
+    def test_a_field_read_outside_a_call_registers_on_the_instance_s_epoch(self) -> None:
+        rule = Recorder()
+        reader = Reader()
+        attach(reader, at(Reader), rule)
+
+        _ = reader.store
+
+        assert rule.asked[-1][2] is reader.effect_scope
+
+    def test_a_field_read_inside_a_call_registers_on_the_call(self) -> None:
+        rule = Recorder()
+        reader = Reader()
+        attach(reader, at(Reader), rule)
+
+        async def drive() -> None:
+            async with open_call(at(Store, "tenant-a"), rule) as call:
+                _ = reader.store
+                assert rule.asked[-1][2] is call.effects
 
         run(drive())

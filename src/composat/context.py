@@ -24,7 +24,7 @@ reader should be able to tell them apart at a glance.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -32,12 +32,19 @@ from typing import TYPE_CHECKING, cast, final
 
 from .errors import NoCallContextError
 from .identity import ComponentKey
-from .scope import EffectScope
+from .scope import EffectScope, Reclaimable
 from .spec import RequirementSpec
 
 if TYPE_CHECKING:
-    from .component import RequirementResolver
     from .scope import Disposable, Revoke
+
+type Rule = Callable[[ComponentKey, RequirementSpec, Reclaimable], object]
+"""How a requirement becomes an instance: the shape of :class:`composat.RequirementResolver`.
+
+Spelled out here rather than imported, because of the direction this module sits in: a field read asks
+the call whether it is inside one, so the dependency runs ``component → context`` and the rule's own
+type cannot run the other way without a cycle.
+"""
 
 _AT_THE_CALL = "<resolve>"
 """The name a call-level resolve gives the requirement it makes up.
@@ -58,7 +65,7 @@ class CallContext:
     """
 
     key: ComponentKey
-    rule: RequirementResolver
+    rule: Rule
     effects: EffectScope = field(default_factory=EffectScope)
 
     def resolve[T](self, contract: type[T], /) -> T:
@@ -104,7 +111,7 @@ def put(effect: Disposable, /) -> Revoke:
 
 
 @asynccontextmanager
-async def open_call(key: ComponentKey, rule: RequirementResolver, /) -> AsyncGenerator[CallContext]:
+async def open_call(key: ComponentKey, rule: Rule, /) -> AsyncGenerator[CallContext]:
     """Make ``key`` the caller for the duration, and give the call a scope of its own.
 
     ``rule`` is the answer a requirement is resolved by, which is the same one a field read goes

@@ -24,6 +24,7 @@ import contextlib
 from dataclasses import dataclass
 from typing import Annotated, ClassVar, Protocol, cast, get_args, get_origin, get_type_hints
 
+from .context import current_or_none
 from .errors import UnboundRequirementError
 from .identity import ComponentIdentity, ComponentKey
 from .scope import EffectScope, Reclaimable
@@ -39,10 +40,13 @@ class RequirementResolver(Protocol):
     implementation that understands the requirement's ``extras`` acts on them — that is where a scope
     strategy attaches — and one that ignores them resolves by key alone.
 
-    The third is the epoch the resolution is made on behalf of, which lets a resolver hand back
-    something with a lifetime shorter than the assembly's: an instance built for this reader alone is
-    registered in that epoch and released when it closes. A resolver answering from the assembly's
-    instances registers nothing and passes it through, so one seam covers both kinds of answer.
+    The third is the scope the resolution is made on behalf of, which lets a resolver hand back
+    something with a lifetime shorter than the assembly's: what it builds for this reader alone is
+    registered there and released when that scope closes. It is the innermost lifetime the read
+    happens inside (:func:`read` passes the call's scope when one is in force, the instance's epoch
+    otherwise), so "this answer lives as long as the request" is written in the resolver rather than
+    in a second read path. A resolver answering from the assembly's instances registers nothing and
+    passes it through, so one seam covers both kinds of answer.
     """
 
     def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
@@ -424,9 +428,14 @@ def read(component: Component, requirement: RequirementSpec) -> object:
     """What ``requirement`` reads as on ``component``: the instance answering it at its own key.
 
     The one place a requirement turns into an instance, reached from the descriptor's ``__get__``.
-    Whatever a resolver registers is answered to this instance's epoch, so a field read while the
-    component is loaded belongs to the epoch it was read in and is released when that epoch closes.
-    Reading during ``unload`` is therefore the last moment the scope takes effects.
+    Whatever a resolver registers is answered to the *innermost lifetime the read happens inside*: a
+    read made during a call registers into that call's scope and is released when the call ends, and
+    a read made anywhere else registers into the instance's epoch. That is what makes an annotation
+    that asks for a short-lived answer mean the same thing whether it is read as a field or resolved
+    from the call — and what makes the epoch the fallback rather than the rule.
+
+    The key is the asker's either way. A call says whose work this is; it does not make the component
+    reading one of its fields ask on the call's behalf.
 
     ``UnboundRequirementError`` when nothing is attached: an instance built and used by hand, or read
     from a hook of something that went through no assembly.
@@ -435,7 +444,9 @@ def read(component: Component, requirement: RequirementSpec) -> object:
     binding = component.binding
     if binding is None:
         raise UnboundRequirementError(component, requirement.name)
-    return binding.rule(binding.key, requirement, component.effect_scope)
+    call = current_or_none()
+    effects: Reclaimable = component.effect_scope if call is None else call.effects
+    return binding.rule(binding.key, requirement, effects)
 
 
 async def reopen_epoch(component: Component) -> None:
