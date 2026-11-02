@@ -49,7 +49,7 @@ from .component import Component, RequirementResolver, attach
 from .errors import ServiceNotUpError
 from .identity import ComponentIdentity, ComponentKey
 from .manager import ComponentManager
-from .registry import ComponentRegistry
+from .registry import ComponentRegistry, Declaration
 from .scope import Reclaimable
 from .spec import RequirementSpec
 from .state import ComponentState
@@ -85,8 +85,9 @@ class Replacement:
     answers with ``instance`` either way — the old instance is gone by the time this is handed
     back — and what a dependant's ``provider_changed`` did about being told is a separate fact.
 
-    ``failed`` is keyed by the *dependant*, not by the replaced key: one hook that raises is not a
-    reason for the others to stay uninformed, so the map is what all of them said.
+    ``failed`` is keyed by whoever complained: a dependant whose ``provider_changed`` raised, and the
+    replaced key itself when the instance that was taken out would not let go. One hook that raises is
+    not a reason for the others to stay uninformed, so the map is what all of them said.
     """
 
     instance: Component
@@ -144,6 +145,15 @@ def _in_order(keys: Iterable[ComponentKey], order: Sequence[ComponentIdentity]) 
     rank = {identity: index for index, identity in enumerate(order)}
     fallback = len(rank)
     return tuple(sorted(keys, key=lambda key: rank.get(key.identity, fallback)))
+
+
+def _level_of(state: ComponentState) -> ComponentState:
+    """The level a replacement is brought to: what the instance it takes over was *serving* at.
+
+    A drained instance counts as loaded rather than as draining — the replacement is a fresh
+    instance, and asking it to finish somebody else's work is asking it to be born halfway down.
+    """
+    return ComponentState.ENABLED if state is ComponentState.ENABLED else ComponentState.LOADED
 
 
 class Assembly:
@@ -266,6 +276,85 @@ class Assembly:
             else:
                 failed[key] = error
         return AssemblyResult(tuple(completed), failed)
+
+    async def replace(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
+        """Put a new instance behind ``key``, without a gap in what the key answers.
+
+        ``declaration`` has to name ``key``: the slot is what is being replaced, and a declaration for
+        somewhere else would start a second instance where this one is meant to take over. Something
+        has to be up under it, or there is nothing to swap for.
+
+        The declaration moves first, so a generation the registry will not take costs nothing: it is
+        refused before an instance is built, and the key keeps answering what it answered. The new
+        instance then comes up to the level the old one *served* at, which is what makes this a change
+        of instance rather than a change of level; one that cannot come up is taken back down, the old
+        declaration is put back, and the failure is raised with the key exactly as it was found.
+
+        Once the new instance is the one up, the dependants are told (:meth:`_notify`) and the old
+        instance is taken down last, so the gap a reader can see is the instant between the two
+        instances and nothing wider. What a dependant says about being told is *reported*, not raised —
+        the swap has landed either way — and so is an old instance whose ``unload`` refuses: it is down
+        regardless (that is what the state machine commits), and the map says which key complained.
+        """
+        if key not in self._up:
+            raise ValueError(f"nothing is up under {key}")
+        if declaration.key != key:
+            raise ValueError(f"{declaration.key} cannot take over {key}")
+        superseded = self._registry.declaration(key)
+        self._registry.redeclare(declaration)
+        old = self._up[key]
+        instance = declaration.build()
+        attach(instance, key, self._rule)
+        try:
+            await self._manager.migrate(instance, _level_of(old.state.state))
+        except (asyncio.CancelledError, Exception):
+            self._registry.redeclare(superseded)
+            _ = await self._shutdown(instance)
+            raise
+        self._up[key] = instance
+        failed = await self._notify(key.identity, excluding=key)
+        error = await self._shutdown(old)
+        if error is not None:
+            failed[key] = error
+        return instance if not failed else Replacement(instance, failed)
+
+    async def _notify(
+        self,
+        identity: ComponentIdentity,
+        *,
+        excluding: ComponentKey | None,
+    ) -> dict[ComponentKey, BaseException]:
+        """Tell the instances that declared ``identity`` that whatever answers it has changed.
+
+        Re-read from the classes rather than remembered, and mapped through the registry the same way a
+        field read is, so an interface dependant is told when the provider behind its binding changes
+        and an instance that merely imported the provider is not told at all — importing is not
+        depending.
+
+        Direct dependants only: a transitive dependant's own provider did not change, and deciding what
+        a change propagates to is not the framework's call. ``excluding`` is the key that was just
+        swapped — its new instance did not depend on anything that changed.
+
+        What failed comes back per key rather than raising on the first: one hook that raises is not a
+        reason for the others to stay uninformed.
+
+        The table is read as it was when the swap landed: a dependant that starts or stops while the
+        walk runs is not part of this round, which keeps a hook that manages the assembly from breaking
+        the walk it is part of.
+        """
+        failed: dict[ComponentKey, BaseException] = {}
+        for key, instance in tuple(self._up.items()):
+            if key == excluding:
+                continue
+            for spec in instance.requirements():
+                if self._registry.provider_identity(spec.service) != identity:
+                    continue
+                try:
+                    await instance.provider_changed(spec)
+                except Exception as error:  # noqa: BLE001 - one dependant's failure is reported, not raised
+                    failed[key] = error
+                break
+        return failed
 
     def _closed(self, keys: tuple[ComponentKey, ...]) -> tuple[ComponentKey, ...]:
         """The batch ``keys`` is, closed over what they require, still in the caller's order.

@@ -92,6 +92,45 @@ class Quitter(Component):
         raise asyncio.CancelledError
 
 
+class Watching(Component):
+    """A dependant that writes down what it was told."""
+
+    store: Store
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.told: list[RequirementSpec] = []
+
+    async def provider_changed(self, requirement: RequirementSpec) -> None:
+        self.told.append(requirement)
+
+
+class Objecting(Watching):
+    """A dependant for whom being told is itself a failure."""
+
+    async def provider_changed(self, requirement: RequirementSpec) -> None:
+        raise RuntimeError("not now")
+
+
+class Steady(Component):
+    """A leaf whose replacement generation is the one that will not come up."""
+
+
+async def refusing_load(self: Component) -> None:
+    """A lifecycle hook that refuses, for a generation written up as a class dict."""
+    raise RuntimeError("load refused")
+
+
+def generation(name: str, **body: object) -> type[Component]:
+    """A class wearing the identity of the module-level one called ``name``: a reload, written down.
+
+    The identity of a type is the path it was written at, so the only way to have a second generation
+    of one is to build a class that claims the same path — which is what a module reloading under a
+    running assembly looks like from in here.
+    """
+    return type(name, (Component,), {"__module__": __name__, **body})
+
+
 class WeatherService(Protocol):
     """A service contract written as an interface: whoever answers it stays behind the name."""
 
@@ -432,3 +471,102 @@ class TestFailures:
             _ = run(assembly.start(at(Store), at(Quitter)))
 
         assert assembly.keys() == ()
+
+
+class TestSwapping:
+    def test_a_replacement_takes_over_the_key_and_the_old_one_goes_down(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        old = assembly.instance(at(Store))
+        assert old is not None
+
+        result = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert not isinstance(result, Replacement)
+        assert assembly.instance(at(Store)) is result
+        assert old.state.state is ComponentState.UNLOADED
+
+    def test_the_new_instance_comes_up_to_the_level_the_old_one_served_at(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+
+    def test_a_loaded_one_is_not_made_to_serve_by_being_replaced(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store), enable=False))
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+    def test_a_dependant_is_told_what_changed(self) -> None:
+        assembly = Assembly(declaring(Declaration(Watching), Declaration(Store)))
+        _ = run(assembly.start(at(Watching)))
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        watching = assembly.instance(at(Watching))
+        assert isinstance(watching, Watching)
+        assert watching.told == [RequirementSpec("store", Store)]
+
+    def test_a_dependant_that_minds_is_reported_apart_from_the_swap(self) -> None:
+        assembly = Assembly(declaring(Declaration(Objecting), Declaration(Store)))
+        _ = run(assembly.start(at(Objecting)))
+
+        result = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert isinstance(result, Replacement)
+        assert isinstance(result.failed[at(Objecting)], RuntimeError)
+        assert assembly.instance(at(Store)) is result.instance
+
+    def test_a_declaration_that_names_another_key_is_refused(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        with pytest.raises(ValueError, match="cannot take over"):
+            _ = run(assembly.replace(at(Store), Declaration(Engine)))
+
+    def test_replacing_a_key_nothing_is_up_under_is_refused(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        with pytest.raises(ValueError, match="nothing is up"):
+            _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+    def test_a_generation_the_registry_will_not_take_costs_nothing(self) -> None:
+        registry = declaring(Declaration(Store))
+        assembly = Assembly(registry)
+        _ = run(assembly.start(at(Store)))
+        old = assembly.instance(at(Store))
+        greedy = generation("Store", __annotations__={"hall": Hall})
+
+        with pytest.raises(ValueError, match="already has requirements"):
+            _ = run(assembly.replace(at(Store), Declaration(greedy)))
+
+        assert assembly.instance(at(Store)) is old
+        assert registry.declaration(at(Store)).component_class is Store
+
+    def test_a_new_instance_that_will_not_come_up_leaves_the_key_as_it_was(self) -> None:
+        registry = declaring(Declaration(Steady))
+        assembly = Assembly(registry)
+        _ = run(assembly.start(at(Steady)))
+        old = assembly.instance(at(Steady))
+
+        with pytest.raises(RuntimeError, match="load refused"):
+            _ = run(assembly.replace(at(Steady), Declaration(generation("Steady", load=refusing_load))))
+
+        assert assembly.instance(at(Steady)) is old
+        assert state_of(assembly, at(Steady)) is ComponentState.ENABLED
+        assert registry.declaration(at(Steady)).component_class is Steady
+
+    def test_an_old_instance_that_will_not_let_go_is_reported_against_its_key(self) -> None:
+        assembly = Assembly(declaring(Declaration(Sticky)))
+        _ = run(assembly.start(at(Sticky)))
+
+        result = run(assembly.replace(at(Sticky), Declaration(generation("Sticky"))))
+
+        assert isinstance(result, Replacement)
+        assert isinstance(result.failed[at(Sticky)], RuntimeError)
+        assert assembly.instance(at(Sticky)) is result.instance
