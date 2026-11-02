@@ -2,8 +2,9 @@
 
 The rewrite is rebuilding the package layer by layer. What is here so far is the foundation the
 rest stands on — identities and keys, effect scopes, the component base and what it declares, the
-dependency graph, and the errors those layers raise. The registry, assembly, and loader layers land
-on top of these; see ``archive/pre-rewrite`` for the design they are being rebuilt from.
+dependency graph, the registry of declarations, and the errors those layers raise. The assembly and
+loader layers land on top of these; see ``archive/pre-rewrite`` for the design they are being
+rebuilt from.
 """
 
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
@@ -19,6 +20,8 @@ from .errors import UnboundRequirementError as UnboundRequirementError
 from .errors import UnboundServiceError as UnboundServiceError
 from .identity import ComponentIdentity as ComponentIdentity
 from .identity import ComponentKey as ComponentKey
+from .registry import ComponentRegistry as ComponentRegistry
+from .registry import Declaration as Declaration
 from .scope import EffectScope as EffectScope
 from .scope import Reclaimable as Reclaimable
 from .scope import name_of as name_of
