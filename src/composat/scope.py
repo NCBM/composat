@@ -89,7 +89,7 @@ class EffectScope:
             except Exception as e:  # noqa: BLE001
                 gathered.append(e)
         if gathered:
-            raise ExceptionGroup("Error occurred when recycling effects: ", gathered)
+            raise ExceptionGroup("Error occurred when recycling effects", gathered)
 
     def put(self, effect: Disposable) -> Revoke:
         self._test_open()
