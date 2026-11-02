@@ -1,14 +1,28 @@
 """The instances this process has up, the rule a requirement is answered by, and what a batch reports.
 
 Driving a component through its states is the manager's job, and deciding what is declared is the
-registry's; what is here is the table the two meet in — one instance per key — and the answer a
-declared requirement reads out of it.
+registry's; what is here is the table the two meet in — one instance per key — the answer a declared
+requirement reads out of it, and the verbs that fill the table and empty it.
 
 A batch that comes up short is reported (:class:`AssemblyResult`) rather than raised: one tenant's
 broken configuration stays that tenant's problem, and the call site reads which keys failed with
 what. Asking for the other reading — a batch that is atomic — is a request, and that one raises. A
 swap reports the same way (:class:`Replacement`), because a replacement that landed with a dependant
 complaining is neither an unchanged key nor a failed swap.
+
+**A batch is closed over what its keys need.** ``start(App:tenant-a)`` brings up what ``App``
+declares, transitively, each dependency at the qualifier of the key that named it: instances of one
+identity are told apart by the qualifier, so a reader served by one tenant is answered by that
+tenant's provider. An identity the caller listed itself is left where it was listed — naming a
+dependency is how a deployment says where that thing sits — and an implied key that is already up is
+passed over rather than started a second time. ``stop`` is deliberately not the mirror of that: it
+takes down the keys it was given and nothing else, because a dependency may be serving keys the
+caller did not name.
+
+**A batch is admitted before anything is built.** A key nothing declares, a key listed twice, a key
+already up: all three are refused as exceptions, because they are facts about the call rather than a
+component failing on its own, and half a batch already up with nothing to report it would be the
+worst of both readings.
 
 The rule is a function of the table rather than a method of the thing that fills it
 (:func:`default_rule`), and that is a reading rather than a style. A requirement is answered from
@@ -27,15 +41,18 @@ table nothing writes to.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from .component import Component, RequirementResolver
+from .component import Component, RequirementResolver, attach
 from .errors import ServiceNotUpError
-from .identity import ComponentKey
+from .identity import ComponentIdentity, ComponentKey
+from .manager import ComponentManager
 from .registry import ComponentRegistry
 from .scope import Reclaimable
 from .spec import RequirementSpec
+from .state import ComponentState
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,18 +134,33 @@ def default_rule(
     return resolve
 
 
+def _in_order(keys: Iterable[ComponentKey], order: Sequence[ComponentIdentity]) -> tuple[ComponentKey, ...]:
+    """``keys`` in the order ``order`` gives their identities; the caller's order within one.
+
+    Sorting is stable, so several instances of one identity keep the order they were handed in, and a
+    key whose identity has left the order sinks to the end rather than being dropped — a key whose
+    declaration was withdrawn on the way is still one this assembly holds.
+    """
+    rank = {identity: index for index, identity in enumerate(order)}
+    fallback = len(rank)
+    return tuple(sorted(keys, key=lambda key: rank.get(key.identity, fallback)))
+
+
 class Assembly:
-    """The instances this process has up, and the rule they reach each other by.
+    """The instances this process has up, the rule they reach each other by, and the two batch verbs.
 
     One instance per key: an identity may have several (a tenant each), and each answers at its own
-    qualifier. What is here so far is the table and the rule over it: the verbs that change the table
-    — bringing a batch up, taking it back down, swapping one instance behind its key — arrive with
-    the manager, which is what drives a component through its states. A batch answers with an
-    :class:`AssemblyResult` and a swap with a :class:`Replacement`, both of which say what happened
-    rather than raise, so a caller can tell a batch that came up short from one that never ran.
+    qualifier. :meth:`start` fills the table against the registry's order and :meth:`stop` empties it
+    against the reverse, and both report what happened rather than raising — except for what is wrong
+    with the call itself, which is refused before the first instance exists.
+
+    Which instance answers a requirement is not decided here but in the rule this assembly was handed,
+    and that rule reads this same table: an instance that came up a moment ago is what the next field
+    read gets, with nothing refreshed.
     """
 
     _registry: ComponentRegistry
+    _manager: ComponentManager
     _up: dict[ComponentKey, Component]
     _rule: RequirementResolver
 
@@ -137,14 +169,19 @@ class Assembly:
         registry: ComponentRegistry,
         up: dict[ComponentKey, Component] | None = None,
         rule: RequirementResolver | None = None,
+        manager: ComponentManager | None = None,
     ) -> None:
         """Hold ``registry``'s instances in ``up``, answered by ``rule`` or by the default rule.
 
         ``up`` is the table this assembly fills, and a caller that passes one gets to build a rule
         over it before the assembly exists (:func:`default_rule`). It is held as given and never
         rebound, so a rule built from it keeps reading what the assembly writes.
+
+        ``manager`` drives the instances this assembly brings up. It is handed in so that a process
+        already driving components keeps one set of per-instance locks rather than two.
         """
         self._registry = registry
+        self._manager = ComponentManager() if manager is None else manager
         self._up = {} if up is None else up
         self._rule = default_rule(registry, self._up) if rule is None else rule
 
@@ -174,3 +211,159 @@ class Assembly:
     def keys(self) -> tuple[ComponentKey, ...]:
         """Every key that is up, in the order it came up."""
         return tuple(self._up)
+
+    async def start(self, *keys: ComponentKey, enable: bool = True, strict: bool = False) -> AssemblyResult:
+        """Build and bring ``keys`` up, requirements first, and report what happened.
+
+        The batch is these keys closed over what they require (:meth:`_closed`), in the registry's
+        order rather than the caller's, so a requirement is up before the instance that reads it.
+        ``enable`` is the level: ``False`` leaves the batch ``LOADED``, which is what a deployment that
+        gates each key wants — a declaration says how to build a component, and the call says whether
+        it should be serving.
+
+        A component that fails is left where the failure left it, reported, and the rest still come
+        up. ``strict`` asks for the other reading: the keys *this call* brought up are taken back
+        down, in reverse, and the original failure is re-raised. A cancelled batch has no result to
+        report, so it takes back what it brought up and lets the ``CancelledError`` go on.
+        """
+        batch = _in_order(self._closed(self._require_startable(keys)), self._registry.order())
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        try:
+            for key in batch:
+                try:
+                    await self._bring_up(key, enable=enable)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    # One component's failure is the batch's business, not the call's: it is reported
+                    # and the rest are still brought up.
+                    failed[key] = error
+                    if strict:
+                        raise
+                    continue
+                completed.append(key)
+        except (asyncio.CancelledError, Exception):
+            await self._retract_all(completed)
+            raise
+        return AssemblyResult(tuple(completed), failed)
+
+    async def stop(self, *keys: ComponentKey) -> AssemblyResult:
+        """Take ``keys`` back down, the instances that need them going first.
+
+        Keys that are not up are passed over — nothing is done to them, so they are in neither tuple of
+        the result — and an empty batch reports exactly that, which is what makes ``finally: await
+        stop(*assembly.keys())`` the teardown a caller can run without asking first. Ordering comes
+        from the registry, and everything else from the instances this assembly holds, so a key whose
+        declaration was withdrawn on the way is still taken down.
+        """
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
+            error = await self._retract(key)
+            if error is None:
+                completed.append(key)
+            else:
+                failed[key] = error
+        return AssemblyResult(tuple(completed), failed)
+
+    def _closed(self, keys: tuple[ComponentKey, ...]) -> tuple[ComponentKey, ...]:
+        """The batch ``keys`` is, closed over what they require, still in the caller's order.
+
+        A listed key brings up what its type declares, transitively, each dependency at the qualifier
+        of the key that named it. An identity the caller listed itself is not derived: the batch
+        already says where that thing sits, and the derivation only fills the gaps. An implied key
+        that is already up is passed over — this call has nothing to do for it, and taking it down
+        with its dependant later is not this call's business either.
+
+        An implied key nothing declares is a ``KeyError`` naming the requirement that implied it,
+        because the alternative — starting the declared half and failing at the first field read —
+        puts the cause as far from the call as it can be. The walk carries the parent that reached the
+        key, which is what makes the message name a field rather than an identity nobody wrote down.
+        """
+        listed = {key.identity for key in keys}
+        batch: dict[ComponentKey, None] = dict.fromkeys(keys)
+        expanding = list(keys)
+        while expanding:
+            parent = expanding.pop(0)
+            for spec in self._registry.requirements_of(parent.identity):
+                provider = self._registry.provider_identity(spec.service)
+                if provider in listed:
+                    continue
+                implied = ComponentKey(provider, parent.instance)
+                if implied in batch or implied in self._up:
+                    continue
+                if implied not in self._registry:
+                    needed = f"{parent} declares {spec.name}: {spec.service.__qualname__}"
+                    raise KeyError(f"{needed}, so it needs {implied}, and nothing is declared there")
+                batch[implied] = None
+                expanding.append(implied)
+        return tuple(batch)
+
+    def _require_startable(self, keys: tuple[ComponentKey, ...]) -> tuple[ComponentKey, ...]:
+        """Refuse a batch that is not addressed at real, fresh keys, before anything is built.
+
+        An undeclared key is a ``KeyError``; a key listed twice, or one already up, is a
+        ``ValueError``. Those are facts about the call rather than one component failing on its own,
+        so they are exceptions rather than a result — and catching them halfway through the batch
+        would leave the first half up with nothing to report it.
+        """
+        seen: set[ComponentKey] = set()
+        for key in keys:
+            if key not in self._registry:
+                raise KeyError(key)
+            if key in seen:
+                raise ValueError(f"key is listed twice in one batch: {key}")
+            if key in self._up:
+                raise ValueError(f"already up: {key}")
+            seen.add(key)
+        return keys
+
+    async def _bring_up(self, key: ComponentKey, *, enable: bool) -> None:
+        """Build one instance, point its requirements at ``key``, and drive it to the level asked for.
+
+        The instance is in the table before ``load`` runs, so a requirement read from a hook finds
+        what is up — this instance at this key included, which is what lets a component read its own
+        field instead of missing. A failure takes it back down and forgets it, so a key that did not
+        come up is reported as failed rather than as up.
+        """
+        instance = self._registry.declaration(key).build()
+        attach(instance, key, self._rule)
+        self._up[key] = instance
+        try:
+            await self._manager.migrate(instance, ComponentState.ENABLED if enable else ComponentState.LOADED)
+        except (asyncio.CancelledError, Exception):
+            _ = await self._retract(key)
+            raise
+
+    async def _retract(self, key: ComponentKey) -> BaseException | None:
+        """Forget ``key`` and take its instance down; the error when a hook refused to let it go.
+
+        The key stops answering before the hooks run, so a dependant reading it during the teardown
+        sees a miss rather than an instance on its way out. The error is *returned* rather than
+        raised, because this also runs on failure paths, where the error that brought us here is the
+        caller's business and a second one would replace it.
+        """
+        instance = self._up.pop(key, None)
+        if instance is None:
+            return None
+        return await self._shutdown(instance)
+
+    async def _shutdown(self, instance: Component) -> BaseException | None:
+        """Drive one instance all the way down; the error when a hook refused."""
+        try:
+            await self._manager.migrate(instance, ComponentState.UNLOADED)
+        except Exception as error:  # noqa: BLE001 - an error is the answer here, not a re-raise
+            return error
+        return None
+
+    async def _retract_all(self, keys: list[ComponentKey]) -> None:
+        """Take an abandoned batch back down, in reverse.
+
+        This runs when the batch has nothing to report with — it was cancelled, or ``strict`` gave up
+        on it — so the error that got us here keeps propagating, and the walk carries on past an
+        instance whose hook refuses because there is no one left to tell.
+        """
+        for key in reversed(keys):
+            if key in self._up:
+                _ = await self._retract(key)

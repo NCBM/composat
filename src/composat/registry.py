@@ -27,6 +27,7 @@ from .component import Component
 from .dependency import DependencyGraph
 from .errors import UnboundServiceError
 from .identity import ComponentIdentity, ComponentKey
+from .spec import RequirementSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +155,18 @@ class ComponentRegistry:
     def declarations(self) -> tuple[Declaration, ...]:
         """Every declaration, in declaration order."""
         return tuple(self._declarations.values())
+
+    def requirements_of(self, identity: ComponentIdentity) -> tuple[RequirementSpec, ...]:
+        """The requirements instances of ``identity`` declare, as their type declares them.
+
+        The registered type's own reading rather than a second copy: a key is what tells instances of
+        one identity apart, and what they need is a fact about the identity. ``KeyError`` when the
+        registry holds no declaration of it.
+        """
+        for key, declaration in self._declarations.items():
+            if key.identity == identity:
+                return declaration.component_class.requirements()
+        raise KeyError(identity)
 
     def order(self) -> tuple[ComponentIdentity, ...]:
         """Assembly order: requirements first."""

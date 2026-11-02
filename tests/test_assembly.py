@@ -1,14 +1,17 @@
-"""The seam: what a declared requirement reads, and what the assembly hands that read.
+"""The seam and the batches: what a declared requirement reads, and what filling the table does.
 
 The rule is exercised as a function over a table rather than through a running assembly, which is
 the whole point of it being one: what a field read gets is decided by the qualifier and by what is
-up, and neither needs a manager to test. What the assembly adds is the table the rule reads, so that
-is what its own cases are about.
+up, and neither needs a manager to test. What the assembly adds above that is the batch — which keys
+a call covers, the order they come up in, and what a key that fails leaves behind — so that is what
+its own cases are about.
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import asyncio
+from collections.abc import Coroutine
+from typing import ClassVar, Protocol
 
 import pytest
 
@@ -18,6 +21,8 @@ from composat import (
     Component,
     ComponentKey,
     ComponentRegistry,
+    ComponentState,
+    Declaration,
     EffectScope,
     Replacement,
     RequirementResolver,
@@ -29,12 +34,62 @@ from composat.scope import Disposable, Revoke
 from composat.spec import RequirementSpec
 
 
+def run[T](coro: Coroutine[object, object, T], /) -> T:
+    return asyncio.run(coro)
+
+
 class Store(Component):
     """A leaf: other components ask for it."""
 
 
 class Engine(Component):
     store: Store
+
+
+class Vault(Component):
+    """A step in a chain, so a closure has something to be transitive about."""
+
+    store: Store
+
+
+class Hall(Component):
+    """Two edges away from a leaf: what ``start`` should reach without being told."""
+
+    vault: Vault
+
+
+class Wired(Component):
+    """A component that reads a requirement from its own hook, which is what closure makes possible."""
+
+    store: Store
+    read: Store | None = None
+
+    async def load(self) -> None:
+        self.read = self.store
+
+
+class Wobbly(Component):
+    """A component that will not load, having registered an effect first."""
+
+    released: ClassVar[list[str]] = []
+
+    async def load(self) -> None:
+        _ = self.effect_scope.put(lambda: Wobbly.released.append("released"))
+        raise RuntimeError("load refused")
+
+
+class Sticky(Component):
+    """A component that will not let go."""
+
+    async def unload(self) -> None:
+        raise RuntimeError("unload refused")
+
+
+class Quitter(Component):
+    """A component whose hook is cancelled before it comes back."""
+
+    async def load(self) -> None:
+        raise asyncio.CancelledError
 
 
 class WeatherService(Protocol):
@@ -182,3 +237,198 @@ class TestReport:
         assert not replacement.ok
         assert replacement.instance is instance
         assert replacement.failed == failed
+
+
+def declaring(*declarations: Declaration) -> ComponentRegistry:
+    """A registry holding ``declarations``: what every batch case needs before it can start one."""
+    registry = ComponentRegistry()
+    _ = registry.declare_all(declarations)
+    return registry
+
+
+def state_of(assembly: Assembly, key: ComponentKey) -> ComponentState:
+    """Where the instance under ``key`` is; a case that asks about a key that is down is a bad case."""
+    instance = assembly.instance(key)
+    assert instance is not None, f"nothing is up under {key}"
+    return instance.state.state
+
+
+class TestClosure:
+    def test_a_start_reaches_what_its_key_needs_two_edges_away(self) -> None:
+        assembly = Assembly(declaring(Declaration(Hall), Declaration(Vault), Declaration(Store)))
+
+        result = run(assembly.start(at(Hall)))
+
+        assert result.completed == (at(Store), at(Vault), at(Hall))
+        assert assembly.keys() == (at(Store), at(Vault), at(Hall))
+
+    def test_a_dependency_comes_up_at_the_qualifier_of_the_key_that_named_it(self) -> None:
+        registry = declaring(Declaration(Engine, instance="tenant-a"), Declaration(Store, instance="tenant-a"))
+        assembly = Assembly(registry)
+
+        result = run(assembly.start(at(Engine, "tenant-a")))
+
+        assert result.completed == (at(Store, "tenant-a"), at(Engine, "tenant-a"))
+
+    def test_a_dependency_the_caller_named_is_left_where_it_was_named(self) -> None:
+        # ``Engine`` at a tenant needs a store there, and the only one declared sits at the empty
+        # qualifier: naming it in the call is what says where that store is meant to live.
+        assembly = Assembly(declaring(Declaration(Engine, instance="tenant-a"), Declaration(Store)))
+
+        result = run(assembly.start(at(Engine, "tenant-a"), at(Store)))
+
+        assert result.completed == (at(Store), at(Engine, "tenant-a"))
+
+    def test_a_requirement_that_is_already_up_is_not_started_twice(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        result = run(assembly.start(at(Engine)))
+
+        assert result.completed == (at(Engine),)
+        assert assembly.keys() == (at(Store), at(Engine))
+
+    def test_an_implied_key_nothing_declares_names_the_requirement(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine, instance="tenant-a"), Declaration(Store)))
+
+        with pytest.raises(KeyError) as raised:
+            _ = run(assembly.start(at(Engine, "tenant-a")))
+
+        message = str(raised.value)
+        assert "declares store: Store" in message
+        assert str(at(Store, "tenant-a")) in message
+        assert assembly.keys() == ()
+
+
+class TestAdmission:
+    def test_a_key_nothing_declares_is_refused(self) -> None:
+        assembly = Assembly(ComponentRegistry())
+
+        with pytest.raises(KeyError):
+            _ = run(assembly.start(at(Store)))
+        assert assembly.keys() == ()
+
+    def test_a_key_listed_twice_is_refused(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        with pytest.raises(ValueError, match="listed twice"):
+            _ = run(assembly.start(at(Store), at(Store)))
+        assert assembly.keys() == ()
+
+    def test_a_key_that_is_already_up_is_refused(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        with pytest.raises(ValueError, match="already up"):
+            _ = run(assembly.start(at(Store)))
+
+
+class TestComingUp:
+    def test_a_batch_comes_up_to_serving(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+
+        result = run(assembly.start(at(Engine)))
+
+        assert result.ok
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+        assert state_of(assembly, at(Engine)) is ComponentState.ENABLED
+
+    def test_a_batch_that_asked_for_no_more_than_loaded_stops_there(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        _ = run(assembly.start(at(Store), enable=False))
+
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+    def test_a_hook_reads_the_requirement_the_batch_brought_up(self) -> None:
+        assembly = Assembly(declaring(Declaration(Wired), Declaration(Store)))
+
+        _ = run(assembly.start(at(Wired)))
+
+        wired = assembly.instance(at(Wired))
+        assert isinstance(wired, Wired)
+        assert wired.read is assembly.instance(at(Store))
+
+
+class TestGoingDown:
+    def test_a_batch_goes_down_dependants_first(self) -> None:
+        assembly = Assembly(declaring(Declaration(Hall), Declaration(Vault), Declaration(Store)))
+        _ = run(assembly.start(at(Hall)))
+
+        result = run(assembly.stop(*assembly.keys()))
+
+        assert result.completed == (at(Hall), at(Vault), at(Store))
+        assert assembly.keys() == ()
+
+    def test_a_key_that_is_not_up_is_passed_over(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        result = run(assembly.stop(at(Store)))
+
+        assert result.ok
+        assert result.completed == ()
+
+    def test_an_empty_batch_leaves_everything_where_it_was(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Engine)))
+
+        result = run(assembly.stop())
+
+        assert result.completed == ()
+        assert assembly.keys() == (at(Store), at(Engine))
+
+    def test_stopping_a_component_leaves_its_requirement_up(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Engine)))
+
+        _ = run(assembly.stop(at(Engine)))
+
+        assert assembly.keys() == (at(Store),)
+
+    def test_a_component_that_will_not_unload_is_reported_and_stops_answering(self) -> None:
+        assembly = Assembly(declaring(Declaration(Sticky)))
+
+        _ = run(assembly.start(at(Sticky)))
+        result = run(assembly.stop(at(Sticky)))
+
+        assert not result.ok
+        assert isinstance(result.failed[at(Sticky)], RuntimeError)
+        assert assembly.keys() == ()
+
+
+class TestFailures:
+    def test_a_component_that_will_not_load_is_reported_and_the_rest_come_up(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store), Declaration(Wobbly)))
+
+        result = run(assembly.start(at(Store), at(Wobbly)))
+
+        assert result.completed == (at(Store),)
+        assert isinstance(result.failed[at(Wobbly)], RuntimeError)
+        assert assembly.keys() == (at(Store),)
+
+    def test_strict_takes_back_what_this_call_brought_up(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store), Declaration(Wobbly)))
+
+        with pytest.raises(RuntimeError, match="load refused"):
+            _ = run(assembly.start(at(Store), at(Wobbly), strict=True))
+
+        assert assembly.keys() == ()
+
+    def test_a_failed_load_releases_what_it_registered(self) -> None:
+        # The epoch of a lifetime that never started goes with the failure: what the hook put there
+        # is released rather than left for a next reader who will never come.
+        Wobbly.released.clear()
+        assembly = Assembly(declaring(Declaration(Wobbly)))
+
+        result = run(assembly.start(at(Wobbly)))
+
+        assert isinstance(result.failed[at(Wobbly)], RuntimeError)
+        assert Wobbly.released == ["released"]
+
+    def test_a_cancelled_batch_takes_back_what_it_brought_up(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store), Declaration(Quitter)))
+
+        with pytest.raises(asyncio.CancelledError):
+            _ = run(assembly.start(at(Store), at(Quitter)))
+
+        assert assembly.keys() == ()

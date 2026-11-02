@@ -104,6 +104,12 @@ class ComponentManager:
         ``unload`` is the one step that is not taken back. A component that could not release what it
         held is still down, and the epoch closes with it, so a state saying otherwise would be the lie.
 
+        A move whose step fails and puts the instance back at ``UNLOADED`` closes the epoch too: what
+        the hook registered belongs to a lifetime that never started, and a failed ``load``'s sockets
+        are nobody's to find later. A cancelled move is the one case left open — releasing an epoch
+        means awaiting a release, and awaiting while being cancelled would not finish — so the epoch
+        of a cancelled ``load`` is released by whatever holds the instance next.
+
         The instance's state is read here, inside the lock, so a move always starts from where the
         instance actually is.
         """
@@ -116,6 +122,8 @@ class ComponentManager:
                 except BaseException:
                     if step is not Operation.unload:
                         undo()
+                        if component.state.state is ComponentState.UNLOADED:
+                            await reopen_epoch(component)
                     raise
 
     async def reload(self, component: Component) -> None:

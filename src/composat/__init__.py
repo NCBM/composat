@@ -3,9 +3,9 @@
 The rewrite is rebuilding the package layer by layer. What is here so far is the foundation the
 rest stands on — identities and keys, effect scopes, the component base and what it declares, the
 state machine and the manager that drives it, the dependency graph, the registry of declarations,
-and the assembly's seam: the table of what is up, the rule a requirement is answered by, and the
-report a batch or a swap hands back. The operations over that table, and the loader, land on top of
-these; see ``archive/pre-rewrite`` for the design they are being rebuilt from.
+and the assembly: the table of what is up, the rule a requirement is answered by, the batch verbs
+that fill the table and empty it, and the report they hand back. The loader lands on top of these;
+see ``archive/pre-rewrite`` for the design they are being rebuilt from.
 """
 
 from .assembly import Assembly as Assembly
