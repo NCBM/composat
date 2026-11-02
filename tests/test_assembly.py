@@ -28,6 +28,7 @@ from composat import (
     RequirementResolver,
     ServiceNotUpError,
     UnboundServiceError,
+    require,
 )
 from composat.assembly import default_rule
 from composat.scope import Disposable, Revoke
@@ -43,25 +44,25 @@ class Store(Component):
 
 
 class Engine(Component):
-    store: Store
+    store: Store = require()
 
 
 class Vault(Component):
     """A step in a chain, so a closure has something to be transitive about."""
 
-    store: Store
+    store: Store = require()
 
 
 class Hall(Component):
     """Two edges away from a leaf: what ``start`` should reach without being told."""
 
-    vault: Vault
+    vault: Vault = require()
 
 
 class Wired(Component):
     """A component that reads a requirement from its own hook, which is what closure makes possible."""
 
-    store: Store
+    store: Store = require()
     read: Store | None = None
 
     async def load(self) -> None:
@@ -95,7 +96,7 @@ class Quitter(Component):
 class Watching(Component):
     """A dependant that writes down what it was told."""
 
-    store: Store
+    store: Store = require()
 
     def __init__(self) -> None:
         super().__init__()
@@ -540,7 +541,7 @@ class TestSwapping:
         assembly = Assembly(registry)
         _ = run(assembly.start(at(Store)))
         old = assembly.instance(at(Store))
-        greedy = generation("Store", __annotations__={"hall": Hall})
+        greedy = generation("Store", hall=require(Hall))
 
         with pytest.raises(ValueError, match="already has requirements"):
             _ = run(assembly.replace(at(Store), Declaration(greedy)))

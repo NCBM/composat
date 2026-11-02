@@ -3,12 +3,14 @@
 A component is business methods. The framework reads three things off the class:
 
 * **the identity** — the class's own path, from :class:`~composat.identity.ComponentIdentity`;
-* **requirements** — annotations naming a contract, installed as descriptors so that reading the
-  field is what resolves the dependency;
+* **requirements** — the fields the class body hands to :func:`require`, whose descriptor is what
+  answers a read with the instance the field asks for;
 * **capabilities** — the hooks the type writes, which is what the state machine drives.
 
 Everything else an instance carries is the application's: an annotated plain resource, an attribute
-with no annotation, a private cache. :meth:`Component._classify` is the one place the line is drawn.
+with no annotation, a private cache. A field is a requirement because the class body said so, not
+because of what its annotation looks like; the annotation says what the field reads as, which is how
+a checker keeps up with both halves.
 
 What the framework *does* to an instance is here too, as functions rather than methods — :func:`attach`,
 :func:`read` and :func:`reopen_epoch`: an operation an application must not be able to replace is not
@@ -74,6 +76,12 @@ decides what a type claims.
 class _Bound:
     """The attribute a requirement is read as: a live resolution, never a stored instance.
 
+    ``require()`` returns one, so the class body is what installs it: the field exists as an ordinary
+    assignment, which is what a checker reads, and *is* the descriptor, which is what a read goes
+    through. What the class body cannot say is the name, or the annotation the marker sits under, so
+    :meth:`settle` fills in the record once the class exists — and a marker nobody settled, set on a
+    finished class rather than written in its body, is refused rather than read as a second answer.
+
     Reading asks the instance it was read from, at that instance's key and on that instance's epoch,
     so a replaced provider is visible to the reader with nothing refreshed. Off the class it answers
     with the requirement itself, which is how a tool asks what a field declares.
@@ -82,18 +90,68 @@ class _Bound:
     silently disagrees with the first.
     """
 
-    spec: RequirementSpec
+    #: The contract given at the declaration site, when one was: ``require(Store)`` instead of
+    #: ``require()``. It is what the annotation has to agree with, and not a second source of truth.
+    contract: type[object] | None
 
-    def __init__(self, spec: RequirementSpec) -> None:
-        self.spec = spec
+    #: The requirement as the registry and the assembly read it; ``None`` until the class is settled.
+    spec: RequirementSpec | None = None
+
+    def __init__(self, contract: type[object] | None = None) -> None:
+        self.contract = contract
+
+    def settle(self, name: str, annotation: object, owner: type[object]) -> RequirementSpec:
+        """Record what the field this marker was written as asks for.
+
+        The name is the field's own, beside the marker; the annotation is read for what the field
+        reads as. Two markers are refused rather than recorded: one whose contract at the declaration
+        site the annotation disagrees with, since one of the two is then wrong, and one whose
+        annotation names nothing a requirement could ever be answered by.
+        """
+        named = _is_contract(annotation)
+        if self.contract is not None and named is not None and named is not self.contract:
+            asked, said = self.contract.__qualname__, named.__qualname__
+            raise ValueError(f"{owner.__qualname__}.{name} is declared for {asked} and annotated {said}")
+        contract = self.contract if self.contract is not None else named
+        if contract is None:
+            where = "names no contract" if annotation is None else "names something that is not a contract"
+            raise ValueError(f"{owner.__qualname__}.{name} is a requirement whose annotation {where}")
+        self.spec = RequirementSpec(name, contract, _extras(annotation))
+        return self.spec
 
     def __get__(self, instance: Component | None, owner: type[object] | None = None) -> object:
+        if self.spec is None:
+            where = "a class" if owner is None else owner.__qualname__
+            raise ValueError(f"{where} was handed a requirement after it was made: declare it in the class body")
         if instance is None:
             return self.spec
         return read(instance, self.spec)
 
     def __set__(self, instance: Component, value: object) -> None:
-        raise AttributeError(f"{self.spec.name} resolves to the instance that answers it, and is not assignable")
+        field = "this field" if self.spec is None else self.spec.name
+        raise AttributeError(f"{field} resolves to the instance that answers it, and is not assignable")
+
+
+def require[T](contract: type[T] | None = None) -> T:
+    """Declare a field a requirement: the framework answers it, and reading the field is how.
+
+    ``store: Store = require()`` is the whole spelling. The annotation says what the field reads as,
+    which is what a checker needs; the marker says the framework is what answers it, which used to be
+    guessed from the annotation. Being an assignment in the class body, the field counts as
+    initialized to a checker, so a requirement no longer looks like an instance variable nothing
+    ever sets.
+
+    ``contract`` is the optional half, for a checker that will not infer a return type from the
+    annotation the call is written under: ``store: Store = require(Store)`` reads the same and is
+    refused when the two disagree. Written without the annotation it is still a complete declaration,
+    and the field still reads as ``Store`` — what is lost is a checker's willingness to accept a
+    class attribute nobody annotated.
+
+    The contract need not be in scope while the class is being made, because no annotation is read
+    then either: a class defined further down the module, or imported only for typing, declares its
+    requirements the same way.
+    """
+    return cast("T", _Bound(contract))
 
 
 def _peeled(annotation: object) -> object:
@@ -118,13 +176,14 @@ def _extras(annotation: object) -> tuple[object, ...]:
 def _is_contract(annotation: object) -> type[object] | None:
     """The contract ``annotation`` names, or ``None`` when it names an ordinary value.
 
-    The whole of the framework's classification, in one rule:
+    This is the check a *marked* field goes through, not what finds the marked fields: the class body
+    said which fields are requirements, and this decides whether what each one is annotated with can
+    answer for it.
 
-    * a :class:`Component` subclass or a ``Protocol`` → a **contract**: the field is a requirement,
-      a descriptor is installed, and the registry draws an edge;
-    * anything else — ``list[str]``, a plain resource type, an annotation-free attribute — **an
-      ordinary attribute**: the constructor's assignment survives and the framework reads that name
-      once, for the freeze.
+    * a :class:`Component` subclass or a ``Protocol`` → a **contract**, and the registry draws an
+      edge for it;
+    * anything else — ``list[str]``, a plain resource type — **an ordinary value**, which a
+      requirement cannot ask for.
 
     A ``Protocol`` with no provider bound to it is a contract that has no answer yet, and the
     registry raises :class:`~composat.errors.UnboundServiceError` where it draws the edge.
@@ -157,16 +216,19 @@ def _resolved_annotations(cls: type[object]) -> dict[str, object]:
         raise NameError(f"{where}: declare the component at module level, so the name is reachable") from error
 
 
-def _field_names(cls: type[object]) -> frozenset[str]:
-    """The annotation names ``cls`` and its bases carry, taken raw and unresolved.
+def _own_fields(cls: type[object]) -> dict[str, object]:
+    """What ``cls``'s own body holds, whatever it holds: its class dict, in written order.
 
-    Names need no evaluation, which is why the freeze can happen at class creation while the
-    classification cannot: a forward reference is a perfectly good name and not yet a type.
+    ``vars`` is typed as holding ``Any``, and a class body may hold anything: a method, an
+    annotation's default, a marker. Naming the copy is what lets a marker be found by ``isinstance``
+    rather than by trusting the dict it came out of.
     """
-    names: set[str] = set()
-    for klass in reversed(cls.__mro__):
-        names.update(vars(klass).get("__annotations__") or {})
-    return frozenset(names)
+    return cast("dict[str, object]", dict(vars(cls)))
+
+
+def _unsettled(value: object) -> bool:
+    """Whether ``value`` is a requirement marker no class has read yet."""
+    return isinstance(value, _Bound) and value.spec is None
 
 
 class Component:
@@ -183,13 +245,10 @@ class Component:
     :func:`reopen_epoch` ends its epoch and starts the next.
     """
 
-    #: The requirements this type declares, once classified; ``None`` until then. A class that has
-    #: not been classified answers with its nearest base's map.
+    #: The requirements this type declares, once settled; ``None`` until then. The map is complete
+    #: for the class — what it inherited, then what its own body declared — so a subclass answers for
+    #: both without walking anything.
     _declared: ClassVar[dict[str, RequirementSpec] | None] = None
-
-    #: The annotation names this type was created with, frozen. A name added afterwards is refused:
-    #: a requirement declared on a class that has already answered is one nothing will ever order.
-    _fields: ClassVar[frozenset[str]] = frozenset()
 
     effect_scope: EffectScope
 
@@ -203,18 +262,16 @@ class Component:
     binding: Binding | None = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Freeze the field names, and classify now when every name already resolves.
+        """Settle the requirements now, when every name they are written under already resolves.
 
-        Classifying here keeps a read from changing the shape of the class: ``hasattr``, ``dir()`` and
-        a checker reading the annotations all see the descriptors, because they were installed when
-        the class was made.
+        Settling here keeps a read from changing the shape of the class: a checker, ``hasattr`` and
+        ``dir()`` all see the same class they saw when it was made.
 
         An annotation naming a class defined further down the module does not resolve while its own
         class is still being built, and Python allows that forward reference. Such a class stays
-        unclassified and is classified at its first ask, when everything the module defines exists.
+        unsettled and is settled at its first ask, when everything the module defines exists.
         """
         super().__init_subclass__(**kwargs)
-        cls._fields = _field_names(cls)
         with contextlib.suppress(NameError):
             # A forward reference. It resolves at the first ask, or fails loudly there.
             cls._classify()
@@ -257,43 +314,64 @@ class Component:
 
     @classmethod
     def _requirements_of(cls) -> dict[str, RequirementSpec]:
-        """The classified requirements of ``cls``: its own map, or the nearest base's.
+        """The requirements of ``cls``, settled once: what it inherited, then what it declares.
 
-        The frozen fields are checked on every ask, which puts the freeze where a reader would
-        otherwise be misled: a class whose annotations grew after classification answers with the
-        requirements it was classified with, and the extra one would be missing from every answer
-        that matters — declared, never ordered, never resolved.
+        A marker that never got a record is refused on every ask, which puts the refusal where a
+        reader would otherwise be misled: a requirement installed on a class that already answered is
+        not in the map, so it would be declared, never ordered, never resolved.
         """
-        grown = _field_names(cls) - cls._fields
-        if grown:
-            names = ", ".join(sorted(grown))
-            raise ValueError(f"{cls.__qualname__} declared {names} after its fields were frozen")
-        if cls is not Component and cls.__dict__.get("_declared") is None:
+        cls._require_settled()
+        if cls is Component:
+            return {}
+        if cls.__dict__.get("_declared") is None:
             cls._classify()
-        for klass in cls.__mro__:
-            found = vars(klass).get("_declared")
+        return cast("dict[str, RequirementSpec]", cls._declared)
+
+    @classmethod
+    def _classify(cls) -> None:
+        """Settle ``cls``'s requirements once: one record per field its body marked.
+
+        The class body installed the descriptors — ``require()`` returned them — so what is left is
+        to read each one's annotation and keep the record, which is what the registry draws edges
+        from. The map comes out whole, the base's requirements first, so a subclass that declares one
+        of its own still answers for everything it inherited.
+
+        Only the fields this class's own body marks are settled here: a base settled its own when it
+        was made, and re-settling it would rewrite a shared descriptor. A class that marks nothing
+        reads no annotation at all, so an ordinary field naming something odd is none of this ask's
+        business.
+        """
+        own = {name: value for name, value in _own_fields(cls).items() if isinstance(value, _Bound)}
+        if not own:
+            cls._declared = dict(cls._inherited())
+            return
+        annotations = _resolved_annotations(cls)
+        declared = dict(cls._inherited())
+        for name, marker in own.items():
+            declared[name] = marker.settle(name, annotations.get(name), cls)
+        cls._declared = declared
+
+    @classmethod
+    def _inherited(cls) -> dict[str, RequirementSpec]:
+        """The map the nearest base settled, settling it first if its own ask was deferred."""
+        for klass in cls.__mro__[1:]:
+            if klass is Component:
+                return {}
+            base = cast("type[Component]", klass)
+            if base.__dict__.get("_declared") is None:
+                base._classify()
+            found = base.__dict__.get("_declared")
             if isinstance(found, dict):
                 return cast("dict[str, RequirementSpec]", found)
         return {}
 
     @classmethod
-    def _classify(cls) -> None:
-        """Settle ``cls``'s requirements once: classify each annotation, install what it declares.
-
-        The field names were frozen at class creation; this decides which of them are needs and
-        installs the descriptors that make them readable. The installed attribute *is* the
-        requirement, so declaring and reading are one act seen from two sides, and the registry draws
-        an edge exactly where the field is readable.
-        """
-        declared: dict[str, RequirementSpec] = {}
-        for name, annotation in _resolved_annotations(cls).items():
-            contract = _is_contract(annotation)
-            if contract is None:
-                continue
-            spec = RequirementSpec(name, contract, _extras(annotation))
-            setattr(cls, name, _Bound(spec))
-            declared[name] = spec
-        cls._declared = declared
+    def _require_settled(cls) -> None:
+        """Refuse a marker set on a class that had already been made: nothing would ever order it."""
+        late = sorted(name for name, value in _own_fields(cls).items() if _unsettled(value))
+        if late:
+            fix = "a requirement is written in the class body"
+            raise ValueError(f"{cls.__qualname__} was handed {', '.join(late)} after it was made: {fix}")
 
     async def load(self) -> None:
         pass

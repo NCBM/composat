@@ -16,6 +16,7 @@ from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
 from .component import Component as Component
 from .component import RequirementResolver as RequirementResolver
 from .component import reopen_epoch as reopen_epoch
+from .component import require as require
 from .dependency import DependencyCycleError as DependencyCycleError
 from .dependency import DependencyError as DependencyError
 from .dependency import DependencyGraph as DependencyGraph

@@ -11,7 +11,7 @@ from typing import Annotated, Protocol
 
 import pytest
 
-from composat import ComponentKey, EffectScope, Reclaimable, UnboundRequirementError
+from composat import ComponentKey, EffectScope, Reclaimable, UnboundRequirementError, require
 from composat.component import Component, attach
 from composat.spec import RequirementSpec
 
@@ -32,8 +32,8 @@ class Redis:
 
 
 class Reader(Component):
-    store: Store
-    cache: CacheService
+    store: Store = require()
+    cache: CacheService = require()
     resource: Redis
     notes: list[str]
 
@@ -42,7 +42,13 @@ MARKER = object()
 
 
 class Tagged(Component):
-    store: Annotated[Store, MARKER]
+    store: Annotated[Store, MARKER] = require()
+
+
+class Named(Component):
+    """A requirement whose contract is written at the declaration site, with no annotation."""
+
+    store = require(Store)
 
 
 class TestClassification:
@@ -51,6 +57,14 @@ class TestClassification:
             RequirementSpec("store", Store),
             RequirementSpec("cache", CacheService),
         )
+
+    def test_a_contract_the_class_body_does_not_mark_is_an_ordinary_attribute(self) -> None:
+        # The annotation names a protocol, which used to be the whole of the declaration. It is not
+        # one now: what the class body marks is a requirement, and this one marked nothing.
+        class Unmarked(Component):
+            cache: CacheService
+
+        assert Unmarked.requirements() == ()
 
     def test_any_other_annotation_is_an_ordinary_attribute(self) -> None:
         names = {requirement.name for requirement in Reader.requirements()}
@@ -72,16 +86,41 @@ class TestClassification:
 
         assert Child.requirements() == Reader.requirements()
 
-    def test_the_descriptor_is_on_the_class_from_the_moment_it_exists(self) -> None:
-        assert isinstance(vars(Reader)["store"], object)
+    def test_a_subclass_that_marks_one_of_its_own_answers_for_both(self) -> None:
+        class Child(Reader):
+            other: Store = require()
+
+        assert Child.requirements() == (*Reader.requirements(), RequirementSpec("other", Store))
+
+    def test_the_contract_may_be_written_at_the_declaration_site(self) -> None:
+        assert Named.requirements() == (RequirementSpec("store", Store),)
+
+    def test_a_marked_field_is_a_descriptor_from_the_moment_the_class_exists(self) -> None:
+        # Off the class a requirement answers with the declaration itself, which is how a tool asks
+        # what a field asks for.
+        assert Reader.store == RequirementSpec("store", Store)
         assert "store" in dir(Reader)
 
 
-class TestReadingARequirement:
-    def test_the_class_answers_with_the_declaration(self) -> None:
-        assert isinstance(Reader.__dict__["store"], object)
-        assert Reader.requirements()[0].name == "store"
+class TestAMuddledMarker:
+    def test_a_contract_the_annotation_disagrees_with_is_refused(self) -> None:
+        def declares() -> None:
+            class Contradicting(Reader):
+                store: CacheService = require(Store)  # type: ignore[assignment]
 
+        with pytest.raises(ValueError, match=r"declared for Store and annotated CacheService"):
+            declares()
+
+    def test_a_marker_over_something_that_is_not_a_contract_is_refused(self) -> None:
+        def declares() -> None:
+            class MarkedList(Component):
+                notes: list[str] = require()  # type: ignore[assignment]
+
+        with pytest.raises(ValueError, match="notes is a requirement whose annotation names something"):
+            declares()
+
+
+class TestReadingARequirement:
     def test_an_instance_with_nothing_attached_says_so(self) -> None:
         with pytest.raises(UnboundRequirementError, match=r"Reader\.store"):
             _ = Reader().store
@@ -204,13 +243,21 @@ class TestTheEpoch:
 
 
 class TestLateDeclarations:
-    def test_a_requirement_added_after_the_freeze_is_refused(self) -> None:
+    def test_a_requirement_installed_after_the_class_was_made_is_refused(self) -> None:
         class Late(Component):
             pass
 
-        Late.__annotations__ = {"store": Store}
-        with pytest.raises(ValueError, match="after its fields were frozen"):
+        Late.store = require()  # type: ignore[attr-defined]
+        with pytest.raises(ValueError, match=r"Late was handed store after it was made"):
             _ = Late.requirements()
+
+    def test_reading_a_requirement_nothing_settled_says_so(self) -> None:
+        class Late(Component):
+            pass
+
+        Late.store = require()  # type: ignore[attr-defined]
+        with pytest.raises(ValueError, match=r"Late was handed a requirement after it was made"):
+            _ = Late.store
 
     def test_an_unrelated_attribute_may_still_be_set_on_the_class(self) -> None:
         class Plain(Component):

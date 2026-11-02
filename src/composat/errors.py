@@ -57,10 +57,10 @@ class NoCallContextError(RuntimeError):
 class UnboundRequirementError(RuntimeError):
     """A declared requirement was read before anything resolved it to an instance.
 
-    A field annotation is a *requirement*: the type says the instance will be handed one, so reading
-    the field is as plain as reading any attribute. The assembly makes that true, through
-    ``composat.component.attach``, before ``load`` — an instance reading one of its own requirements
-    in a hook reads something already bound.
+    A field marked with ``require()`` is a *requirement*: the type says the instance will be handed
+    one, so reading the field is as plain as reading any attribute. The assembly makes that true,
+    through ``composat.component.attach``, before ``load`` — an instance reading one of its own
+    requirements in a hook reads something already bound.
 
     This error means the instance ran ahead of the binding: constructed and used by hand, or read from
     a hook of something that went through no assembly. It is raised only for a name the type

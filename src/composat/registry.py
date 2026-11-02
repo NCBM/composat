@@ -5,13 +5,13 @@ are recorded as edges between **identities**: "the engine needs storage" is a fa
 not about two particular instances of them. Instances of one identity share that node, which is what
 keeps the graph the size of the type population rather than of the deployment. The edges are what the
 order is worked out from; the field names are only how an instance later reads what it asked for, so
-the two views come from one reading of the annotations and stay in step.
+the two views come from one reading of the class's declarations and stay in step.
 
-An annotation may name an **interface** (a ``Protocol``) rather than the component that provides it,
-which keeps the asking side clear of the implementation. :meth:`ComponentRegistry.bind` is where such
-a name acquires a meaning, and it is the one place an interface turns into an identity: a requirement
-with nothing bound to it is refused along with the declaration that asks for it, at declaration time
-rather than at the call that would have needed it.
+A requirement's contract may name an **interface** (a ``Protocol``) rather than the component that
+provides it, which keeps the asking side clear of the implementation. :meth:`ComponentRegistry.bind`
+is where such a name acquires a meaning, and it is the one place an interface turns into an identity:
+a requirement with nothing bound to it is refused along with the declaration that asks for it, at
+declaration time rather than at the call that would have needed it.
 
 Declarations are made before the assembly starts and stay put while it runs. Nothing here discovers a
 component or chooses among them: the classes arrive from the application, which is the only thing

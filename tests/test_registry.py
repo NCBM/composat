@@ -19,6 +19,7 @@ from composat import (
     Declaration,
     DependencyCycleError,
     UnboundServiceError,
+    require,
 )
 
 
@@ -35,16 +36,16 @@ class Dsn(Component):
 
 
 class Engine(Component):
-    store: Store
+    store: Store = require()
 
 
 class Mirror(Component):
-    store: Store
+    store: Store = require()
 
 
 class Facade(Component):
-    engine: Engine
-    mirror: Mirror
+    engine: Engine = require()
+    mirror: Mirror = require()
 
 
 class WeatherService(Protocol):
@@ -61,7 +62,7 @@ class WeatherTool(Component):
 class Forecaster(Component):
     """Asks for the *interface*: the annotation names nothing until a provider is bound to it."""
 
-    weather: WeatherService
+    weather: WeatherService = require()
 
 
 class LeftService(Protocol):
@@ -75,11 +76,11 @@ class RightService(Protocol):
 class Left(Component):
     """Half of a cycle: it asks for what :class:`Right` provides."""
 
-    right: RightService
+    right: RightService = require()
 
 
 class Right(Component):
-    left: LeftService
+    left: LeftService = require()
 
 
 STORAGE = Store.identity()
@@ -90,14 +91,16 @@ WEATHER = WeatherTool.identity()
 FORECASTER = Forecaster.identity()
 
 
-def generation(name: str = "Generation", **annotations: object) -> type[Component]:
+def generation(name: str = "Generation", **requirements: type[object]) -> type[Component]:
     """One generation of a component at this module's ``name``; two calls differ by class object.
 
     Same path, same identity, different class — which is the shape a reload produces. It builds on
-    :class:`Dsn` so the two generations also differ in nothing but the class object.
+    :class:`Dsn` so the two generations also differ in nothing but the class object, and takes the
+    requirements the generation declares, by field name.
     """
 
-    return type(name, (Dsn,), {"__module__": __name__, "__annotations__": annotations})
+    body = {field: require(contract) for field, contract in requirements.items()}
+    return type(name, (Dsn,), {"__module__": __name__, **body})
 
 
 class TestDeclaration:
