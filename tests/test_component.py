@@ -11,7 +11,7 @@ from typing import Annotated, Protocol
 
 import pytest
 
-from composat import ComponentKey, EffectScope, UnboundRequirementError
+from composat import ComponentKey, EffectScope, Reclaimable, UnboundRequirementError
 from composat.component import Component
 from composat.spec import RequirementSpec
 
@@ -89,13 +89,16 @@ class TestReadingARequirement:
     def test_a_bound_instance_asks_its_resolver_at_its_own_key(self) -> None:
         asked: list[tuple[ComponentKey, RequirementSpec]] = []
         store = Store()
+        reader = Reader()
 
-        def resolver(key: ComponentKey, requirement: RequirementSpec, effects: EffectScope) -> object:
+        # The resolver is written against the seam's own type, which is what makes the signature the
+        # framework promises: ``put()`` is the whole of what a rule may ask the epoch for, and a rule
+        # narrowed to ``EffectScope`` would be asking for more than it is handed.
+        def resolver(key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable) -> object:
             asked.append((key, requirement))
             assert effects is reader.effect_scope
             return store
 
-        reader = Reader()
         key = ComponentKey(Reader.identity())
         reader.attach(key, resolver)
 
@@ -103,8 +106,12 @@ class TestReadingARequirement:
         assert asked == [(key, RequirementSpec("store", Store))]
 
     def test_a_requirement_is_not_assignable(self) -> None:
+        def resolver(key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable) -> object:
+            _ = key, requirement, effects
+            return Store()
+
         reader = Reader()
-        reader.attach(ComponentKey(Reader.identity()), lambda *_: Store())
+        reader.attach(ComponentKey(Reader.identity()), resolver)
         with pytest.raises(AttributeError, match="not assignable"):
             reader.store = Store()  # type: ignore[assignment]
 
