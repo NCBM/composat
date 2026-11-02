@@ -3,7 +3,8 @@ promises while it runs.
 
 The machine is data, so most of it is asked as data — a pair of states in, the verbs that join them
 out, no component and no event loop. What needs the loop is the control, and there the cases are the
-two promises a move makes: the state a hook runs in, and the verb a hook that raised can put back.
+three promises a move makes: the state a hook runs in, the verb a hook that raised can put back, and
+the record each committed move hands to whoever is watching.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections.abc import Coroutine
 
 import pytest
 
-from composat import LIFECYCLE_HOOKS, ComponentState, ComponentStateControl, ComponentStateError, Operation
+from composat import LIFECYCLE_HOOKS, Committed, ComponentState, ComponentStateControl, ComponentStateError, Operation
 from composat.state import ARRIVING, LEAVING, Migration
 
 
@@ -178,3 +179,125 @@ class TestTheControl:
         run(drive())
 
         assert order == ["first in", "first out", "second in"]
+
+
+class TestWhatIsReported:
+    def test_a_committed_verb_is_reported_with_the_two_states_it_spans(self) -> None:
+        control = ComponentStateControl()
+        seen: list[Committed] = []
+        _ = control.observe(seen.append)
+
+        async def drive() -> None:
+            async with control.transaction("migrate to ENABLED") as advance:
+                _ = advance(Operation.load)
+                _ = advance(Operation.enable)
+
+        run(drive())
+
+        assert [(move.operation, move.origin, move.arrival) for move in seen] == [
+            (Operation.load, ComponentState.UNLOADED, ComponentState.LOADED),
+            (Operation.enable, ComponentState.LOADED, ComponentState.ENABLED),
+        ]
+        assert not any(move.undone for move in seen)
+
+    def test_a_step_a_hook_put_back_is_reported_as_undone(self) -> None:
+        control = ComponentStateControl()
+        seen: list[Committed] = []
+        _ = control.observe(seen.append)
+
+        async def drive() -> None:
+            async with control.transaction("migrate to LOADED") as advance:
+                undo = advance(Operation.load)
+                undo()
+
+        run(drive())
+
+        # The arrival was reported when it was committed, so the state it did not hold has to be
+        # corrected rather than quietly left standing.
+        assert seen == [
+            Committed(Operation.load, ComponentState.UNLOADED, ComponentState.LOADED),
+            Committed(Operation.load, ComponentState.LOADED, ComponentState.UNLOADED, undone=True),
+        ]
+
+    def test_a_verb_that_is_refused_is_reported_to_nobody(self) -> None:
+        control = ComponentStateControl()
+        seen: list[Committed] = []
+        _ = control.observe(seen.append)
+
+        async def drive() -> None:
+            async with control.transaction("migrate to ENABLED") as advance:
+                with pytest.raises(ComponentStateError):
+                    _ = advance(Operation.enable)
+
+        run(drive())
+
+        assert seen == []
+
+    def test_a_reload_is_reported_where_it_started(self) -> None:
+        control = ComponentStateControl()
+        seen: list[Committed] = []
+        _ = control.observe(seen.append)
+
+        async def drive() -> None:
+            async with control.transaction("migrate to ENABLED") as advance:
+                _ = advance(Operation.load)
+                _ = advance(Operation.enable)
+            async with control.transaction("reload") as advance:
+                _ = advance(Operation.reload)
+
+        run(drive())
+
+        assert seen[-1] == Committed(Operation.reload, ComponentState.ENABLED, ComponentState.ENABLED)
+
+    def test_an_observer_is_called_under_the_lock_and_while_the_move_is_pending(self) -> None:
+        # This is what makes "no awaiting, no driving" a fact rather than a request: an observer
+        # that reached for the manager to move this instance would want a lock it already holds.
+        control = ComponentStateControl()
+        seen: list[tuple[bool, str | None]] = []
+
+        def watch(move: Committed) -> None:
+            seen.append((control.lock.locked(), control.pending))
+
+        _ = control.observe(watch)
+
+        async def drive() -> None:
+            async with control.transaction("migrate to LOADED") as advance:
+                _ = advance(Operation.load)
+
+        run(drive())
+
+        assert seen == [(True, "migrate to LOADED")]
+
+    def test_unsubscribing_stops_that_one_and_leaves_the_others_alone(self) -> None:
+        control = ComponentStateControl()
+        first: list[Committed] = []
+        second: list[Committed] = []
+        unsubscribe = control.observe(first.append)
+        _ = control.observe(second.append)
+
+        unsubscribe()
+
+        async def drive() -> None:
+            async with control.transaction("migrate to LOADED") as advance:
+                _ = advance(Operation.load)
+
+        run(drive())
+
+        assert first == []
+        assert [move.operation for move in second] == [Operation.load]
+
+    def test_unsubscribing_twice_does_nothing(self) -> None:
+        control = ComponentStateControl()
+        seen: list[Committed] = []
+        unsubscribe = control.observe(seen.append)
+
+        unsubscribe()
+        unsubscribe()
+
+        async def drive() -> None:
+            async with control.transaction("migrate to LOADED") as advance:
+                _ = advance(Operation.load)
+
+        run(drive())
+
+        assert seen == []

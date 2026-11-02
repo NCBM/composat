@@ -15,6 +15,7 @@ back.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -152,6 +153,34 @@ type Advance = Callable[[Operation], Undo]
 """The one writer a move is given: commit a verb, and be answered with its undo."""
 
 
+@dataclass(frozen=True, slots=True)
+class Committed:
+    """One move as this instance committed it: the verb, and the two states it spans.
+
+    The control knows no key — one control per instance, and the key belongs to whoever is holding
+    the instance — so this is the whole of what a control can report. Naming the key, and which
+    generation is reporting, is what the assembly adds when it takes one of these as an
+    :class:`~composat.assembly.Event`.
+
+    ``undone`` says which of two things happened to the pair: ``False`` is the commit, where
+    ``arrival`` is the state the hook now runs in, and ``True`` is a hook that raised putting its own
+    step back, where ``origin`` is where the instance ended up and ``arrival`` is what it claimed for
+    as long as the hook ran. A reload arrives where it started, so its two states are the same one.
+    """
+
+    operation: Operation
+    origin: ComponentState
+    arrival: ComponentState
+    undone: bool = False
+
+
+type Observer = Callable[[Committed], None]
+"""What a control calls for each move it commits: the record, once, and nothing else to ask."""
+
+type Unsubscribe = Callable[[], None]
+"""What subscribing answers: the call that stops that one subscription, and does nothing after."""
+
+
 @final
 class ComponentStateControl:
     """One instance's state, the lock its moves run under, and the migration in progress.
@@ -164,16 +193,21 @@ class ComponentStateControl:
     force only while the lock is. A state assigned from anywhere else would be a transition nothing
     drove and nothing can order.
 
+    What a move did is reported through :meth:`observe`, and one instance's list is one instance's
+    business: there is no class-level set of callbacks here, because a shared action's subscribers
+    belong to the component that owns the action rather than to everything of one type.
+
     Final, like the other objects that hold state: there is nothing here an application has a reason
     to replace, and a subclass would be a second answer to where an instance is.
     """
 
-    __slots__ = ("_pending", "_state", "lock")
+    __slots__ = ("_observers", "_pending", "_state", "lock")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self._pending = None
         self._state = ComponentState.UNLOADED
+        self._observers: list[Observer] = []
 
     @override
     def __repr__(self) -> str:
@@ -190,13 +224,42 @@ class ComponentStateControl:
         """The move being run, or ``None`` when nothing is driving this instance."""
         return self._pending
 
+    def observe(self, observer: Observer) -> Unsubscribe:
+        """Notice every move this instance commits, as it commits it.
+
+        The observer runs inside the lock and inside the move — it is called from :meth:`_commit`,
+        before the hook that the move drives — so it may neither await nor drive anything: a hook
+        reached from here would be a second move on an instance already being moved. Anything longer
+        than a record belongs on the far side of whoever subscribed, where there is no lock.
+
+        An application subscribes to an assembly rather than to one of these, because an instance
+        knows no key and a callback with no key has nowhere to put what it saw. Subscribing here is
+        what a test does, and what the assembly does with its own bookkeeping in hand.
+        """
+        self._observers.append(observer)
+
+        def unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._observers.remove(observer)
+
+        return unsubscribe
+
+    def _report(self, committed: Committed) -> None:
+        """Hand one committed move to every observer, in subscription order."""
+        for observer in tuple(self._observers):
+            observer(committed)
+
     def _commit(self, operation: Operation) -> Undo:
-        """Commit one verb, and answer the call that takes it back.
+        """Commit one verb, report it, and answer the call that takes it back.
 
         The arrival is committed *before* the hook runs, so a hook reads the state it is producing:
         a ``load`` runs inside ``LOADED``, and a component asking "am I up" from its own hook is
         answered about the world that hook is making, not the one it is leaving. A refused verb
-        raises :class:`ComponentStateError` and commits nothing.
+        raises :class:`ComponentStateError`, commits nothing and reports nothing.
+
+        The undo reports too. A hook that raises puts its own step back, and an observer that was
+        told about the arrival would otherwise be left holding a state the instance never rests in —
+        so the move that did not hold is reported as one, rather than going quietly uncorrected.
         """
         if self._state not in LEAVING[operation]:
             raise ComponentStateError(operation, LEAVING[operation], self._state)
@@ -204,9 +267,12 @@ class ComponentStateControl:
         arrival = ARRIVING[operation]
         if arrival is not None:
             self._state = arrival
+        self._report(Committed(operation, origin, self._state))
 
         def undo() -> None:
+            undone = self._state
             self._state = origin
+            self._report(Committed(operation, undone, origin, undone=True))
 
         return undo
 

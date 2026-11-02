@@ -35,6 +35,7 @@ from .scope import EffectScope as EffectScope
 from .scope import Reclaimable as Reclaimable
 from .scope import name_of as name_of
 from .spec import RequirementSpec as RequirementSpec
+from .state import Committed as Committed
 from .state import ComponentState as ComponentState
 from .state import ComponentStateControl as ComponentStateControl
 from .state import ComponentStateError as ComponentStateError
