@@ -1,7 +1,8 @@
 """Errors the framework layer raises on its own behalf.
 
-The errors whose semantics are settled live here as they land; the lifecycle and orphan errors
-arrive with the manager and assembly layers.
+The errors whose semantics are settled live here as they land; the orphan error arrives with the
+assembly layer's ``replace``. The state machine's own refusal — a verb driven from a state it does not
+leave — lives with its tables, in :class:`composat.state.ComponentStateError`.
 """
 
 from .identity import ComponentKey
@@ -73,3 +74,29 @@ class UnboundRequirementError(RuntimeError):
         super().__init__(f"{type(component).__name__}.{field} is a declared requirement, and nothing is attached to it")
         self.component = component
         self.field = field
+
+
+class LifecycleReentryError(RuntimeError):
+    """A component asked to be driven while it was already being driven.
+
+    The verbs take the instance's lock for the whole move and are not reentrant, so a hook that drove
+    its own component would wait on a lock it is holding. The guard refuses the ask where it is made
+    instead of leaving a hung task behind, and what a component does instead of driving itself is
+    *declare* what it needs: the assembly brings requirements up in order, and a component never has
+    to.
+
+    The guard follows the task that is running the hook, which catches the second half of the same
+    mistake — a task a hook starts inherits it, so coming back later to drive the manager is refused
+    as well — while an operation running in another task stays independent, as concurrent work on
+    other components must.
+    """
+
+    component: object
+    operation: str
+    current: str
+
+    def __init__(self, component: object, operation: str, current: str) -> None:
+        super().__init__(f"{type(component).__name__} asked for {operation} while {current} was running")
+        self.component = component
+        self.operation = operation
+        self.current = current

@@ -10,10 +10,10 @@ A component is business methods. The framework reads three things off the class:
 Everything else an instance carries is the application's: an annotated plain resource, an attribute
 with no annotation, a private cache. :meth:`Component._classify` is the one place the line is drawn.
 
-What the framework *does* to an instance is here too, as functions rather than methods — :func:`attach`
-and :func:`read`: an operation an application must not be able to replace is not offered to it as a
-member. ``@final`` on a method of the base answers the same question after the fact, refusing an
-extension the declaration had already invited.
+What the framework *does* to an instance is here too, as functions rather than methods — :func:`attach`,
+:func:`read` and :func:`reopen_epoch`: an operation an application must not be able to replace is not
+offered to it as a member. ``@final`` on a method of the base answers the same question after the
+fact, refusing an extension the declaration had already invited.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from .errors import UnboundRequirementError
 from .identity import ComponentIdentity, ComponentKey
 from .scope import EffectScope, Reclaimable
 from .spec import RequirementSpec
+from .state import ComponentStateControl
 
 
 class RequirementResolver(Protocol):
@@ -178,7 +179,8 @@ class Component:
     nothing drives.
 
     The framework's operations on an instance are functions in this module: :func:`attach` gives it
-    the key and the rule its requirements are read by, :func:`read` answers one of them.
+    the key and the rule its requirements are read by, :func:`read` answers one of them, and
+    :func:`reopen_epoch` ends its epoch and starts the next.
     """
 
     #: The requirements this type declares, once classified; ``None`` until then. A class that has
@@ -190,6 +192,11 @@ class Component:
     _fields: ClassVar[frozenset[str]] = frozenset()
 
     effect_scope: EffectScope
+
+    #: Where this instance is in its lifecycle, and the lock its moves run under. One per instance,
+    #: and read-only from outside: the manager is what drives it, through the writer the control
+    #: hands out for as long as it holds the lock.
+    state: ComponentStateControl
 
     #: Where this instance's requirements are read from, written by :func:`attach` before ``load``.
     #: ``None`` until then, which is what :func:`read` reports as an unbound requirement.
@@ -216,6 +223,7 @@ class Component:
         # An instance is born inside an epoch rather than acquiring one on ``load``, which makes the
         # two ends symmetric and a component that never loaded recycle an empty scope.
         self.effect_scope = EffectScope()
+        self.state = ComponentStateControl()
 
     @classmethod
     def identity(cls) -> ComponentIdentity:
@@ -350,3 +358,19 @@ def read(component: Component, requirement: RequirementSpec) -> object:
     if binding is None:
         raise UnboundRequirementError(component, requirement.name)
     return binding.rule(binding.key, requirement, component.effect_scope)
+
+
+async def reopen_epoch(component: Component) -> None:
+    """Release this epoch's effects, and give the instance the scope the next one starts with.
+
+    An epoch is one instance's lifetime between ``load`` and ``unload``: what a resolver registered on
+    its behalf is released when it ends, and the scope it ends into is *closed*, so a straggler holding
+    the old one cannot collect into a lifetime that has moved on. The instance is left with a fresh
+    scope rather than none, which is what makes the two ends symmetric — a component that never loaded
+    recycles an empty one instead of being a special case.
+
+    The write back happens here rather than at each call site, because an instance whose scope was
+    closed under it is broken in a way only the next ``put`` reports.
+    """
+
+    component.effect_scope = await component.effect_scope.reopen()
