@@ -874,6 +874,30 @@ class TestFailures:
 
         assert assembly.keys() == ()
 
+    def test_a_host_tears_down_what_its_own_batch_completed(self) -> None:
+        # What a process host does now that there is no ``serve``: ``completed`` is the keys *this*
+        # call built, and stopping them is the teardown that leaves a provider an earlier phase
+        # started alone — which ``stop(*keys)`` over the whole application would not.
+        assembly = Assembly(declaring(Declaration(Store), Declaration(Engine)))
+        _ = run(assembly.start(at(Store)))
+
+        result = run(assembly.start(at(Engine)))
+        _ = run(assembly.stop(*result.completed))
+
+        assert result.completed == (at(Engine),)
+        assert assembly.keys() == (at(Store),)
+
+    def test_a_batch_that_comes_up_short_takes_back_only_what_it_brought_up(self) -> None:
+        # The other half of the same shape: ``strict`` gives back what the call made and nothing
+        # else, so a host does not have to unwind by hand when its first phase already succeeded.
+        assembly = Assembly(declaring(Declaration(Store), Declaration(Engine), Declaration(Wobbly)))
+        _ = run(assembly.start(at(Store)))
+
+        with pytest.raises(RuntimeError, match="load refused"):
+            _ = run(assembly.start(at(Engine), at(Wobbly), strict=True))
+
+        assert assembly.keys() == (at(Store),)
+
 
 class TestSwapping:
     def test_a_replacement_takes_over_the_key_and_the_old_one_goes_down(self) -> None:
