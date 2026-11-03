@@ -12,14 +12,6 @@ the call is left holding a scope that has already closed. *The caller guarantees
 finished.* There is no task registry to move that obligation into yet, and a scope is closed the
 moment its release is asked for, so nothing that strays afterwards can collect into it.
 
-**The binding comes off last.** Releasing a call's effects is an await, and an effect that resolves
-something while it is being released is answered from the call it belonged to. The binding is removed
-after the release, not before.
-
-**Asking outside a call is a fact about the program.** It is a :class:`NoCallContextError` rather than
-the ``LookupError`` a bare ``ContextVar.get()`` would raise: the two are different mistakes, and a
-reader should be able to tell them apart at a glance.
-
 **What the call asked for, it asks once.** A resolve is remembered on the call, so the rule builds a
 per-request object once however many layers ask for it, and the release it registered happens once.
 That memory is the call's and dies with it — a *snapshot* is only wrong when it outlives the work it
@@ -55,9 +47,9 @@ type cannot run the other way without a cycle.
 _AT_THE_CALL = "<resolve>"
 """The name a call-level resolve gives the requirement it makes up.
 
-``resolve(Store)`` names a bare type, and a bare type carries no extras — that is the reading, not a
-gap: it says "the ordinary one, no special handling". A caller that wants routing asks by the
-requirement a field would be declared with, which is what a field read already is.
+``resolve(Store)`` names a bare type, and a bare type carries no extras: that is the reading, not a
+gap — "the ordinary one, no special handling". A caller that wants routing asks by the requirement a
+field would be declared with, which is what a field read already is.
 """
 
 
@@ -78,22 +70,15 @@ class CallContext:
     def resolve[T](self, contract: type[T], /) -> T:
         """The instance answering ``contract`` for this call: asked once, and one answer for the call.
 
-        What the rule made is kept here, so a second ask — by the component, by plain code deeper
-        down, by anything that can reach :func:`current` — is answered with the same object, and the
-        release the rule registered happens once. That is the whole of what "one unit of work" means
-        to a call: a rule that builds something per request has nowhere else to keep it, since the
-        scope it is handed registers releases and remembers nothing.
-
-        The memory is the call's and dies with it, which is the difference between a snapshot and a
-        wrong answer: a call lasts as long as the work it wraps, while a cached key outlives the
-        generation it was read from.
+        A rule that builds something per request has nowhere else to keep it, since the scope it is
+        handed registers releases and remembers nothing.
         """
         if contract not in self._remembered:
             self._remembered[contract] = self.rule(self.key, RequirementSpec(_AT_THE_CALL, contract), self.effects)
         return cast("T", self._remembered[contract])
 
     def put(self, effect: Disposable, /) -> Revoke:
-        """Register ``effect`` in this call's scope; it is recycled when the call ends, last first."""
+        """``effect`` is registered in this call's scope, and recycled when the call ends, last first."""
         return self.effects.put(effect)
 
 
@@ -114,12 +99,12 @@ def current() -> CallContext:
 
 
 def resolve[T](contract: type[T], /) -> T:
-    """Answer ``contract`` for the call in progress."""
+    """``contract`` is answered for the call in progress, through its rule."""
     return current().resolve(contract)
 
 
 def put(effect: Disposable, /) -> Revoke:
-    """Register ``effect`` in the call in progress, to be recycled when that call ends."""
+    """``effect`` is registered in the call in progress's scope."""
     return current().put(effect)
 
 
