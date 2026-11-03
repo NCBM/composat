@@ -13,9 +13,13 @@ is where such a name acquires a meaning, and it is the one place an interface tu
 a requirement with nothing bound to it is refused along with the declaration that asks for it, at
 declaration time rather than at the call that would have needed it.
 
-Declarations are made before the assembly starts and stay put while it runs. Nothing here discovers a
-component or chooses among them: the classes arrive from the application, which is the only thing
-that knows where they came from, and the version a deployment runs is the deployment's own decision.
+Declarations are the application's, and it changes them while the process runs: a component admitted
+when a connection arrives is declared then, and :meth:`ComponentRegistry.undeclare` is the other end
+of that. What a declaration cannot change is what its identity needs — those edges belong to the type
+— so a generation asking for something else is refused rather than quietly redrawing the graph.
+Nothing here discovers a component or chooses among them: the classes arrive from the application,
+which is the only thing that knows where they came from, and the version a deployment runs is the
+deployment's own decision.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from .component import Component
-from .dependency import DependencyGraph
+from .dependency import DependencyGraph, DependencyInUseError
 from .errors import UnboundServiceError
 from .identity import ComponentIdentity, ComponentKey
 from .spec import RequirementSpec
@@ -148,6 +152,42 @@ class ComponentRegistry:
         self._require_same(key.identity, self._graph.dependencies(key.identity), self._requirements(declaration))
         self._declarations[key] = declaration
 
+    def require_undeclarable(self, *keys: ComponentKey) -> None:
+        """Refuse a batch that could not be withdrawn whole, without withdrawing any of it.
+
+        A caller that has to act on the answer asks twice: what is up under a key is taken down
+        before its declaration goes, so the assembly checks first and commits the withdrawal after.
+
+        Every key has to be declared, and an identity whose last declaration is in the batch may not
+        still be needed by one staying put — an edge with nothing at its far end would leave ordering
+        to guess, which is the invariant the graph exists to hold. ``DependencyInUseError`` names the
+        identities that could not go and who still asks for them.
+        """
+        dropped = self._dropped(*keys)
+        going = set(dropped)
+        for identity in dropped:
+            blocked = self._graph.dependents(identity) - going
+            if blocked:
+                raise DependencyInUseError(identity, frozenset(blocked))
+
+    def undeclare(self, *keys: ComponentKey) -> None:
+        """Withdraw declarations, and the graph node of an identity nothing is left declared under.
+
+        What goes is the declaration, not an instance: a key that is still up would go on answering
+        requirements the registry no longer orders anything by, so the assembly takes the key down
+        first and withdraws it after.
+
+        The batch is checked whole before any of it is committed (:meth:`require_undeclarable`), and
+        the nodes go dependants first, so withdrawing a chain at once is as valid as withdrawing its
+        root alone would not be. An earlier instance of the identity keeps the node, its edges and
+        its place in the order.
+        """
+        self.require_undeclarable(*keys)
+        for identity in self._dropped(*keys):
+            self._graph.remove(identity)
+        for key in dict.fromkeys(keys):
+            del self._declarations[key]
+
     def declaration(self, key: ComponentKey) -> Declaration:
         """The declaration behind ``key``; ``KeyError`` when the registry holds none under it."""
         return self._declarations[key]
@@ -217,6 +257,21 @@ class ComponentRegistry:
         identity, and declining it here is what puts the error where the requirement is written down.
         """
         return tuple(self.provider_identity(spec.service) for spec in declaration.component_class.requirements())
+
+    def _dropped(self, *keys: ComponentKey) -> tuple[ComponentIdentity, ...]:
+        """The identities whose last declaration goes with ``keys``, dependants first.
+
+        Membership is checked here rather than taken from the graph, because the batch may withdraw a
+        dependant and its dependency together: that is a withdrawal the graph would refuse node by
+        node, and the order it is committed in is what makes it valid.
+        """
+        going = dict.fromkeys(keys)
+        for key in going:
+            if key not in self._declarations:
+                raise KeyError(key)
+        staying = {key.identity for key in self._declarations if key not in going}
+        dropping = {key.identity for key in going} - staying
+        return tuple(identity for identity in self._graph.reverse_order() if identity in dropping)
 
     def _in_dependency_order(self, declarations: Sequence[Declaration]) -> tuple[Declaration, ...]:
         """The batch in dependency order, worked out on a throwaway graph.

@@ -18,6 +18,7 @@ from composat import (
     ComponentRegistry,
     Declaration,
     DependencyCycleError,
+    DependencyInUseError,
     UnboundServiceError,
     require,
 )
@@ -292,3 +293,98 @@ class TestRedeclaring:
 
         with pytest.raises(KeyError):
             registry.redeclare(Declaration(Store))
+
+
+class TestWithdrawing:
+    def test_a_withdrawn_key_is_no_longer_declared(self) -> None:
+        registry = ComponentRegistry()
+        key = registry.declare(Store)
+
+        registry.undeclare(key)
+
+        assert key not in registry
+        assert registry.declarations() == ()
+        assert registry.order() == ()
+
+    def test_a_node_still_declared_under_keeps_its_place(self) -> None:
+        registry = ComponentRegistry()
+        first = registry.declare(Store, instance="tenant-a")
+        second = registry.declare(Store, instance="tenant-b")
+
+        registry.undeclare(first)
+
+        assert registry.order() == (STORAGE,)
+        assert registry.requirements_of(STORAGE) == ()
+        assert {declaration.key for declaration in registry.declarations()} == {second}
+
+    def test_withdrawing_what_something_still_declared_needs_is_refused(self) -> None:
+        registry = ComponentRegistry()
+        store = registry.declare(Store)
+        _ = registry.declare(Engine)
+
+        with pytest.raises(DependencyInUseError) as raised:
+            registry.undeclare(store)
+
+        assert raised.value.node == STORAGE
+        assert raised.value.dependents == frozenset({ENGINE})
+        assert store in registry
+
+    def test_a_chain_withdrawn_at_once_goes_dependants_first(self) -> None:
+        registry = ComponentRegistry()
+        _ = registry.declare_all(
+            [Declaration(Facade), Declaration(Mirror), Declaration(Engine), Declaration(Store)],
+        )
+        facade = ComponentKey(FACADE)
+        engine = ComponentKey(ENGINE)
+
+        # Withdrawn one at a time, the second would still be needed by the first; as a batch it is
+        # exactly the set that goes, so neither is needed by anything that stays.
+        registry.undeclare(facade, engine)
+
+        assert {declaration.key for declaration in registry.declarations()} == {
+            ComponentKey(STORAGE),
+            ComponentKey(MIRROR),
+        }
+
+    def test_a_batch_that_is_partly_refused_withdraws_nothing(self) -> None:
+        registry = ComponentRegistry()
+        store = registry.declare(Store)
+        _ = registry.declare(Mirror)
+        _ = registry.declare(Engine)
+        facade = registry.declare(Facade)
+
+        with pytest.raises(DependencyInUseError):
+            registry.undeclare(facade, store)
+
+        assert facade in registry
+        assert store in registry
+        assert {declaration.key for declaration in registry.declarations()} == {
+            ComponentKey(STORAGE),
+            ComponentKey(ENGINE),
+            ComponentKey(MIRROR),
+            facade,
+        }
+
+    def test_the_check_withdraws_nothing_by_itself(self) -> None:
+        registry = ComponentRegistry()
+        store = registry.declare(Store)
+
+        registry.require_undeclarable(store)
+
+        assert store in registry
+        assert registry.declarations() == (Declaration(Store),)
+
+    def test_withdrawing_a_key_that_was_never_declared_is_a_key_error(self) -> None:
+        registry = ComponentRegistry()
+
+        with pytest.raises(KeyError):
+            registry.undeclare(ComponentKey(STORAGE))
+
+    def test_a_withdrawn_identity_can_be_declared_again(self) -> None:
+        registry = ComponentRegistry()
+        registry.undeclare(registry.declare(Store))
+
+        again = registry.declare(Store)
+
+        assert registry.order() == (STORAGE,)
+        assert again in registry
