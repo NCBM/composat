@@ -17,10 +17,10 @@ nothing crosses the other way — which is why a session holds state and needs n
 be admitted the moment it arrives. Work that outlives a response is the *instance's* (``effect_scope``
 in :meth:`Renderer.persist`), not the call's.
 
-The transport is ASGI, written out by hand: no router, no middleware, no framework. A refusal is
-decided before the first byte goes out, because after that the status has been sent and there is no
-putting it back. Everything a web framework would add — routes, auth, a response object, a retry on
-the streaming path — is the application's own business and is left out on purpose.
+The transport is ASGI, written out by hand: no router, no middleware, no framework, and nothing a web
+framework would add — auth, a response object, a retry on the streaming path — because each of those
+is the application's own business. A refusal is decided before the first byte goes out, since after
+that the status has been sent and there is no putting it back.
 """
 
 from __future__ import annotations
