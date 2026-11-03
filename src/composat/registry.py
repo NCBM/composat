@@ -1,25 +1,22 @@
 """The registry of declared components: key, declaration, and the plan they imply.
 
-Requirements come from the component type (:meth:`~composat.component.Component.requirements`) and
-are recorded as edges between **identities**: "the engine needs storage" is a fact about two types,
-not about two particular instances of them. Instances of one identity share that node, which is what
-keeps the graph the size of the type population rather than of the deployment. The edges are what the
-order is worked out from; the field names are only how an instance later reads what it asked for, so
-the two views come from one reading of the class's declarations and stay in step.
+Requirements come from the component type and are recorded as edges between **identities**: "the
+engine needs storage" is a fact about two types, not about two particular instances of them.
+Instances of one identity share that node, which is what keeps the graph the size of the type
+population rather than of the deployment. The edges are what the order is worked out from; the field
+names are only how an instance later reads what it asked for, so the two views come from one reading
+of the class's declarations and stay in step.
 
 A requirement's contract may name an **interface** (a ``Protocol``) rather than the component that
-provides it, which keeps the asking side clear of the implementation. :meth:`ComponentRegistry.bind`
-is where such a name acquires a meaning, and it is the one place an interface turns into an identity:
-a requirement with nothing bound to it is refused along with the declaration that asks for it, at
-declaration time rather than at the call that would have needed it.
+provides it, which keeps the asking side clear of the implementation; :meth:`ComponentRegistry.bind`
+is what gives such a name a meaning. A requirement with nothing bound to it is refused along with the
+declaration that asks for it, at declaration time rather than at the call that would have needed it.
 
 Declarations are the application's, and it changes them while the process runs: a component admitted
 when a connection arrives is declared then, and :meth:`ComponentRegistry.undeclare` is the other end
-of that. What a declaration cannot change is what its identity needs — those edges belong to the type
-— so a generation asking for something else is refused rather than quietly redrawing the graph.
-Nothing here discovers a component or chooses among them: the classes arrive from the application,
-which is the only thing that knows where they came from, and the version a deployment runs is the
-deployment's own decision.
+of that. Nothing here discovers a component or chooses among them: the classes arrive from the
+application, which is the only thing that knows where they came from, and the version a deployment
+runs is the deployment's own decision.
 """
 
 from __future__ import annotations
@@ -41,8 +38,7 @@ class Declaration:
     """A component this process knows how to build, and the qualifier that makes it *this* instance.
 
     ``args`` and ``kwargs`` are how the instance is constructed — the component's own business, which
-    the framework passes to it without reading. The identity is the class's own path, so a reload
-    keeps the text and replaces the class; the key adds the qualifier that tells instances apart.
+    the framework passes to it without reading.
     """
 
     component_class: type[Component]
@@ -85,9 +81,8 @@ class ComponentRegistry:
     def bind(self, service: type[object], provider: type[Component]) -> None:
         """Say which component type answers for ``service``: the interface-to-provider mapping.
 
-        This is where an interface annotation acquires a meaning; with the mapping empty there is no
-        identity for the requirement to point at. The binding is by *type* and says nothing about
-        instances — which instance answers is decided per call, from the caller's own qualifier.
+        The binding is by *type* and says nothing about instances — which instance answers is decided
+        per call, from the caller's own qualifier.
 
         A binding stays put. The requirement edges already drawn from the interface would otherwise
         start pointing at an implementation nobody chose, so a second binding is refused rather than
@@ -106,7 +101,7 @@ class ComponentRegistry:
         This is the one place that decides whether an annotation is a requirement at all, and what it
         requires, so the graph the registry draws and the instance a call resolves answer the same
         question the same way. ``UnboundServiceError`` when the service is an interface with nothing
-        bound to it: the annotation named nothing, and saying so beats answering with something else.
+        bound to it.
         """
         if issubclass(service, Component):
             return ComponentIdentity.of(service)
