@@ -95,6 +95,22 @@ that gets there takes the key out of the table as well — which is why the set 
 for is smaller than the set the machine has.
 """
 
+READABLE: Mapping[ComponentState, frozenset[ComponentState]] = {
+    ComponentState.DRAINING: frozenset({ComponentState.DRAINING, ComponentState.ENABLED}),
+    ComponentState.ENABLED: frozenset({ComponentState.ENABLED}),
+}
+"""The levels that answer a requirement made by a caller at a given level; no row is no constraint.
+
+Only a caller that is doing work is policed, which is why the table is two rows rather than four. A
+caller that is serving has been let in for new work, and a provider that has stopped taking it
+(``DRAINING``) or has not started (``LOADED``) will not do that work — handing it over would be
+answering with something the caller cannot use. A caller that is loading or unloading is preparing or
+letting go and reaches whatever the assembly still holds: a hook that deregisters in ``unload`` reads
+its provider one last time, and the assembly stops answering *for* that key before the hooks run, not
+*to* them. A caller the table does not place at all is in the same position, and that is what the
+missing row stands for.
+"""
+
 
 class ComponentStateError(RuntimeError):
     """A verb was driven from a state it does not leave.

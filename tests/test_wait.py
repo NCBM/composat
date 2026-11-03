@@ -20,6 +20,7 @@ from composat import (
     ComponentState,
     Declaration,
     ServiceNotUpError,
+    require,
 )
 from composat.std.wait import serving
 
@@ -64,6 +65,12 @@ class Slow(Component):
     async def unload(self) -> None:
         Slow.reached.set()
         await Slow.gate.wait()
+
+
+class Reading(Component):
+    """A serving component whose provider is the key a swap is held open on."""
+
+    slow: Slow = require()
 
 
 class TestServing:
@@ -120,5 +127,34 @@ class TestServing:
         # The key answered the new generation the moment it was built; what the wait waited for is
         # that generation serving, which is what the end of the old one's teardown releases.
         assert waited is swapped
+        assert waited is assembly.instance(at(Slow))
+        assert waited.state.state is ComponentState.ENABLED
+
+    def test_a_serving_caller_is_refused_the_generation_that_does_not_serve_yet(self) -> None:
+        Slow.hold()
+        assembly = Assembly(declaring(Declaration(Reading), Declaration(Slow)))
+        _ = run(assembly.start(at(Reading)))
+        reading = assembly.instance(at(Reading))
+        assert isinstance(reading, Reading)
+
+        async def scenario() -> tuple[ServiceNotUpError, Component]:
+            swap = asyncio.create_task(assembly.replace(at(Slow), Declaration(generation("Slow"))))
+            await Slow.reached.wait()
+
+            with pytest.raises(ServiceNotUpError) as refused:
+                _ = reading.slow
+            # ``serving`` is what a caller that has to read *now* reaches for instead of retrying.
+            waited = asyncio.create_task(serving(assembly, at(Slow)))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(waited), 0.01)
+            Slow.gate.set()
+            instance = await waited
+            _ = await swap
+            return refused.value, instance
+
+        refused, waited = run(scenario())
+
+        assert refused.level is ComponentState.LOADED
+        assert refused.asked_from == at(Reading)
         assert waited is assembly.instance(at(Slow))
         assert waited.state.state is ComponentState.ENABLED

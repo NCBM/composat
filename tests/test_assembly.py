@@ -145,6 +145,16 @@ class Announced(Component):
         Announced.live.remove(self)
 
 
+class Detaching(Component):
+    """A component that reads its provider one last time while it is being taken down."""
+
+    store: Store = require()
+    last: Store | None = None
+
+    async def unload(self) -> None:
+        Detaching.last = self.store
+
+
 async def refusing_load(self: Component) -> None:
     """A lifecycle hook that refuses, for a generation written up as a class dict."""
     raise RuntimeError("load refused")
@@ -193,6 +203,16 @@ def asking(service: type[object], name: str = "service") -> RequirementSpec:
     return RequirementSpec(name, service)
 
 
+def brought_up(component: Component, level: ComponentState = ComponentState.LOADED) -> Component:
+    """``component`` driven to ``level`` by the manager, so a hand-built table can hold a level.
+
+    The rule reads levels, so a table written down by a case has to say what its instances are at;
+    driving them is the only way to say that which matches what a running assembly would hold.
+    """
+    run(ComponentManager().migrate(component, level))
+    return component
+
+
 class TestDefaultRule:
     def test_a_requirement_is_answered_at_the_caller_s_own_qualifier(self) -> None:
         tenant = at(Store, "tenant-a")
@@ -234,6 +254,56 @@ class TestDefaultRule:
         rule = default_rule(ComponentRegistry(), {at(Store): Store()})
 
         assert rule(at(Engine), asking(Store), RefusingScope()) is not None
+
+    def test_a_serving_caller_is_not_answered_by_a_draining_provider(self) -> None:
+        store = brought_up(Store(), ComponentState.DRAINING)
+        engine = brought_up(Engine(), ComponentState.ENABLED)
+        rule = default_rule(ComponentRegistry(), {at(Store): store, at(Engine): engine})
+
+        with pytest.raises(ServiceNotUpError) as raised:
+            _ = rule(at(Engine), asking(Store), EffectScope())
+
+        assert raised.value.key == at(Store)
+        assert raised.value.level is ComponentState.DRAINING
+        assert raised.value.asked_from == at(Engine)
+
+    def test_a_draining_caller_is_answered_by_a_draining_provider(self) -> None:
+        store = brought_up(Store(), ComponentState.DRAINING)
+        engine = brought_up(Engine(), ComponentState.DRAINING)
+        rule = default_rule(ComponentRegistry(), {at(Store): store, at(Engine): engine})
+
+        # Both are finishing what they accepted: what is left of the work still reads the provider.
+        assert rule(at(Engine), asking(Store), EffectScope()) is store
+
+    def test_a_caller_that_is_loading_reads_a_loaded_provider(self) -> None:
+        store = brought_up(Store())
+        engine = brought_up(Engine())
+        rule = default_rule(ComponentRegistry(), {at(Store): store, at(Engine): engine})
+
+        # ``start(..., enable=False)`` is this shape: nothing is serving, and ``load`` still reads.
+        assert rule(at(Engine), asking(Store), EffectScope()) is store
+
+    def test_a_caller_the_table_does_not_place_is_not_policed(self) -> None:
+        store = brought_up(Store())
+        rule = default_rule(ComponentRegistry(), {at(Store): store})
+
+        # A hook that ran after its own key was taken out, or a caller outside any component: the
+        # assembly cannot say such a caller is serving, and refusing on that guess would be worse.
+        assert rule(at(Engine), asking(Store), EffectScope()) is store
+
+    def test_a_miss_says_who_asked_and_what_was_there(self) -> None:
+        rule = default_rule(ComponentRegistry(), {})
+        with pytest.raises(ServiceNotUpError) as nothing:
+            _ = rule(at(Engine, "tenant-a"), asking(Store), EffectScope())
+        store = brought_up(Store(), ComponentState.DRAINING)
+        engine = brought_up(Engine(), ComponentState.ENABLED)
+        in_service = default_rule(ComponentRegistry(), {at(Store): store, at(Engine): engine})
+        with pytest.raises(ServiceNotUpError) as not_serving:
+            _ = in_service(at(Engine), asking(Store), EffectScope())
+
+        assert nothing.value.level is None
+        assert "asked for from" in str(nothing.value)
+        assert "is DRAINING" in str(not_serving.value)
 
 
 class TestAssembly:
@@ -577,6 +647,39 @@ class TestReLevelling:
         assert result.completed == (at(Store),)
         assert isinstance(result.failed[at(Bashful)], RuntimeError)
         assert state_of(assembly, at(Bashful)) is ComponentState.LOADED
+
+
+class TestLevelsInResolution:
+    def test_a_serving_component_loses_a_provider_that_has_stopped_serving(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Engine)))
+        engine = assembly.instance(at(Engine))
+        assert isinstance(engine, Engine)
+
+        _ = run(assembly.migrate(at(Store), to=ComponentState.DRAINING))
+        with pytest.raises(ServiceNotUpError) as draining:
+            _ = engine.store
+
+        _ = run(assembly.quiesce(at(Store)))
+        with pytest.raises(ServiceNotUpError) as loaded:
+            _ = engine.store
+
+        assert draining.value.level is ComponentState.DRAINING
+        assert loaded.value.level is ComponentState.LOADED
+        assert loaded.value.asked_from == at(Engine)
+
+    def test_an_unload_hook_still_reads_its_requirement(self) -> None:
+        Detaching.last = None
+        assembly = Assembly(declaring(Declaration(Detaching), Declaration(Store)))
+        _ = run(assembly.start(at(Detaching)))
+        store = assembly.instance(at(Store))
+
+        _ = run(assembly.stop(at(Detaching)))
+
+        # The key stops answering before the hooks run, so this instance is no longer placed: a
+        # teardown reaches whatever the assembly still holds, which is what gives a hook something to
+        # deregister from.
+        assert Detaching.last is store
 
 
 class TestFailures:

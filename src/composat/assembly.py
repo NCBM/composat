@@ -69,7 +69,7 @@ from .manager import ComponentManager
 from .registry import ComponentRegistry, Declaration
 from .scope import Reclaimable
 from .spec import RequirementSpec
-from .state import HELD, Committed, ComponentState, Operation, Unsubscribe
+from .state import HELD, READABLE, Committed, ComponentState, Operation, Unsubscribe
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +187,14 @@ def default_rule(
     that is declared and is not up is a miss (``ServiceNotUpError``), never a reason to answer from
     another instance, which would be answering a question the caller did not ask.
 
+    A level is part of the answer, and whose level it is, is the caller's. An instance that is serving
+    needs a provider that is serving too; one that is loading or unloading is preparing or letting go
+    and reaches whatever the assembly holds (:data:`~composat.state.READABLE`). So the table is read
+    twice — once for the provider, once for the asker — and a caller the table does not place is not
+    policed at all: the assembly cannot say such a caller is doing work, and refusing on a guess would
+    be worse than answering with something it does hold. Both misses say which they were, and who
+    asked: an instance that is up and not serving is not the same incident as a hole in the table.
+
     A ``RequirementSpec`` is accepted as the whole requirement rather than as its service, so an
     annotation that carries extras arrives intact; this rule has no vocabulary to read them with, and
     resolving by key alone is what "the requirement says nothing beyond its service" means.
@@ -201,7 +209,12 @@ def default_rule(
         provider = ComponentKey(registry.provider_identity(requirement.service), key.instance)
         instance = instances.get(provider)
         if instance is None:
-            raise ServiceNotUpError(provider)
+            raise ServiceNotUpError(provider, asked_from=key)
+        asker = instances.get(key)
+        readable = None if asker is None else READABLE.get(asker.state.state)
+        level = instance.state.state
+        if readable is not None and level not in readable:
+            raise ServiceNotUpError(provider, asked_from=key, level=level)
         return instance
 
     return resolve

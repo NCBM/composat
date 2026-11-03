@@ -407,6 +407,11 @@ class Component:
         for: a receiver that wants the value reads the field, whose answer is already current, and one
         that wants to know whether it moved compares what it kept.
 
+        Being told and being able to read are two facts, though. The swap moves the key to the new
+        generation before that generation starts serving, so a receiver driven in the middle of it
+        reads a provider that is built and not yet serving — a miss, and a receiver that has to act on
+        the new one now is what ``composat.std.wait.serving`` exists for.
+
         It is a notification rather than a capability: it is driven for every dependant whether the
         type writes it or not, and the base's answer is to do nothing.
         """

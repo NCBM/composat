@@ -6,6 +6,7 @@ leave — lives with its tables, in :class:`composat.state.ComponentStateError`.
 """
 
 from .identity import ComponentKey
+from .state import ComponentState
 
 
 class UnboundServiceError(RuntimeError):
@@ -26,20 +27,39 @@ class UnboundServiceError(RuntimeError):
 
 
 class ServiceNotUpError(RuntimeError):
-    """The component that provides a service has no instance up for the caller.
+    """The instance a caller asked for is not one it may read: either absent or resting too low.
 
     A call is made for one key, and its services are looked up under that key: instances of one
     identity are told apart by the qualifier, so a caller served by the instance at ``tenant-a`` is
-    answered from the provider at ``tenant-a`` as well. A miss there is the answer — another
-    instance of the provider belongs to another key, and answering with it would be answering a
-    question the caller did not ask.
+    answered from the provider at ``tenant-a`` as well. A miss there is the answer — another instance
+    of the provider belongs to another key, and answering with it would be answering a question the
+    caller did not ask.
+
+    Three facts, because a deployment reads them together: the key that was missed, who asked, and —
+    when the table does hold an instance there — the level it was resting at. "Nothing is up" and "it
+    is up and not serving" are different incidents with different answers, one being a declaration to
+    add and the other work still to finish; and the caller's own key is what says which tenant, or
+    which generation, was being served when the miss happened.
     """
 
     key: ComponentKey
+    asked_from: ComponentKey | None
+    level: ComponentState | None
 
-    def __init__(self, key: ComponentKey) -> None:
-        super().__init__(f"nothing is up under {key}")
+    def __init__(
+        self,
+        key: ComponentKey,
+        *,
+        asked_from: ComponentKey | None = None,
+        level: ComponentState | None = None,
+    ) -> None:
+        said = f"nothing is up under {key}" if level is None else f"the instance under {key} is {level.name}"
+        if asked_from is not None:
+            said = f"{said}, asked for from {asked_from}"
+        super().__init__(said)
         self.key = key
+        self.asked_from = asked_from
+        self.level = level
 
 
 class NoCallContextError(RuntimeError):

@@ -16,10 +16,10 @@ from composat.errors import ServiceNotUpError
 async def serving(assembly: Assembly, key: ComponentKey) -> Component:
     """The instance behind ``key``, once it is serving; the wait is the point, not a retry loop.
 
-    A reader that arrives in the middle of a swap is answered with a generation that is built and not
-    yet serving, because ``replace`` publishes what it installed only after the generation it
-    replaced is gone. That window is the old generation's drain and teardown, so it can be long, and
-    waiting it out is cheaper and more honest than polling until it looks over.
+    A reader that arrives in the middle of a swap is refused, because ``replace`` moves the key to
+    the generation it installed before that generation starts serving: publishing it comes after the
+    one it replaced is gone. That window is the old generation's drain and teardown, so it can be
+    long, and waiting it out is cheaper and more honest than polling until it looks over.
 
     The subscription comes first and the table second, because the stream does not replay: a move
     that lands between the two is caught by the reading, and one that lands after it by the
