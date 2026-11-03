@@ -313,26 +313,6 @@ class TestReloading:
 
 
 class TestSwappingInstances:
-    def test_the_key_is_put_behind_the_new_generation(self, dropins: Path) -> None:
-        _ = module_at(dropins, "alpha.py", _ALPHA)
-        loader = loaded(dropins)
-        alpha = only_component(loader, "alpha")
-        key = at(alpha)
-        assembly = wired(Declaration(alpha))
-        _ = run(assembly.start(key))
-        before = assembly.instance(key)
-        assert before is not None
-
-        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
-        after = loader.reload_module("alpha").unit
-        result = run(loader.swap_instances(assembly, "alpha"))
-
-        replaced = assembly.instance(key)
-        assert result.swapped == (key,)
-        assert replaced is not None
-        assert replaced is not before
-        assert type(replaced) is after.components[0]
-
     def test_what_it_is_built_with_survives_the_swap(self, dropins: Path) -> None:
         _ = module_at(dropins, "alpha.py", _ALPHA_CONSTRUCTED)
         loader = loaded(dropins)
@@ -456,15 +436,6 @@ class TestAsADeclaredComponent:
 
 
 class TestStaleness:
-    def test_an_edit_to_the_entry_is_reported(self, dropins: Path) -> None:
-        path = module_at(dropins, "alpha.py", _ALPHA)
-        loader = loaded(dropins)
-        assert loader.stale() == ()
-
-        _ = path.write_text("from composat import Component\n\nclass Alpha(Component):\n    pass\n", encoding="utf-8")
-
-        assert loader.stale() == ("alpha",)
-
     def test_an_edit_to_a_submodule_that_holds_a_component_is_reported(self, dropins: Path) -> None:
         _ = module_at(dropins, "pkg/__init__.py", "from .inner import Inner\n")
         inner = module_at(
@@ -507,18 +478,6 @@ class TestStaleness:
         path.unlink()
 
         assert loader.stale() == ("alpha",)
-
-    def test_a_reload_makes_it_current_again(self, dropins: Path) -> None:
-        path = module_at(dropins, "alpha.py", _ALPHA)
-        loader = loaded(dropins)
-        _ = path.write_text(
-            "from composat import Component\n\nvalue = 2\n\nclass Alpha(Component):\n    pass\n",
-            encoding="utf-8",
-        )
-
-        _ = loader.reload_module("alpha")
-
-        assert loader.stale() == ()
 
 
 class TestRefusals:

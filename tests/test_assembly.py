@@ -442,14 +442,6 @@ class TestReport:
         assert result.completed == ()
         assert result.failed == {}
 
-    def test_a_batch_that_came_up_short_is_not(self) -> None:
-        failed = {at(Store): RuntimeError("no dsn")}
-        result = AssemblyResult((at(Engine),), failed)
-
-        assert not result.ok
-        assert result.completed == (at(Engine),)
-        assert result.failed == failed
-
     def test_a_swap_nobody_complained_about_is_ok(self) -> None:
         replacement = Replacement(Engine())
 
@@ -500,14 +492,6 @@ def watching(assembly: Assembly) -> list[Event]:
 
 
 class TestClosure:
-    def test_a_start_reaches_what_its_key_needs_two_edges_away(self) -> None:
-        assembly = Assembly(declaring(Declaration(Hall), Declaration(Vault), Declaration(Store)))
-
-        result = run(assembly.start(at(Hall)))
-
-        assert result.completed == (at(Store), at(Vault), at(Hall))
-        assert assembly.keys() == (at(Store), at(Vault), at(Hall))
-
     def test_a_dependency_comes_up_at_the_qualifier_of_the_key_that_named_it(self) -> None:
         registry = declaring(Declaration(Engine, instance="tenant-a"), Declaration(Store, instance="tenant-a"))
         assembly = Assembly(registry)

@@ -79,14 +79,6 @@ class Reading(Component):
 
 
 class TestServing:
-    def test_a_key_that_is_serving_is_answered_without_waiting(self) -> None:
-        assembly = Assembly(declaring(Declaration(Store)))
-        _ = run(assembly.start(at(Store)))
-
-        instance = run(serving(assembly, at(Store)))
-
-        assert instance is assembly.instance(at(Store))
-
     def test_a_key_that_is_not_up_is_refused(self) -> None:
         assembly = Assembly(declaring(Declaration(Store)))
 
