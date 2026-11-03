@@ -8,7 +8,7 @@ A batch that comes up short is reported (:class:`AssemblyResult`) rather than ra
 broken configuration stays that tenant's problem, and the call site reads which keys failed with
 what. Asking for the other reading — a batch that is atomic — is a request, and that one raises. A
 swap reports the same way (:class:`Replacement`), because a replacement that landed with a dependant
-complaining is neither an unchanged key nor a failed swap.
+complaining, or with its own ``enable`` refusing, is neither an unchanged key nor a failed swap.
 
 **What the table does is reported as it happens.** An instance's own control reports each move it
 commits, and this assembly adds the key and the generation and hands the result to whoever
@@ -137,16 +137,23 @@ class AssemblyResult:
 
 @dataclass(frozen=True, slots=True)
 class Replacement:
-    """What a swap left behind: the instance the key answers with, and the dependants that complained.
+    """What a swap left behind: the instance the key answers with, and what went wrong on the way.
 
-    The two are reported together because a swap has two outcomes that are not each other's
-    negation: ``failed`` being non-empty does *not* mean the replacement did not land. The key
-    answers with ``instance`` either way — the old instance is gone by the time this is handed
-    back — and what a dependant's ``provider_changed`` did about being told is a separate fact.
+    The two are reported together because a swap has outcomes that are not each other's negation:
+    ``failed`` being non-empty does *not* mean the replacement did not land. The key answers with
+    ``instance`` either way — the old instance is gone by the time this is handed back — and what a
+    dependant's ``provider_changed`` did about being told is a separate fact.
 
     ``failed`` is keyed by whoever complained: a dependant whose ``provider_changed`` raised, and the
     replaced key itself when the instance that was taken out would not let go. One hook that raises is
-    not a reason for the others to stay uninformed, so the map is what all of them said.
+    not a reason for the others to stay uninformed, so the map is what all of them said. Those two
+    cannot meet in the map, because a dependant is never the key that was swapped.
+
+    ``published`` is a third fact, and it is held apart rather than keyed by the same key: the new
+    generation's ``enable`` refused, so the key answers an instance that is built and not serving.
+    Folding that into ``failed`` would lose one of the two errors whenever the old instance also
+    refused to let go, and the two want different things done about them — a leak to look at, versus
+    a generation to try putting into service again.
 
     ``observer_failures`` carries what an observer said, for the same reason a batch carries it: a
     swap that landed with the reporting broken is neither a clean swap nor a failed one, and the
@@ -155,12 +162,13 @@ class Replacement:
 
     instance: Component
     failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+    published: BaseException | None = None
     observer_failures: tuple[tuple[Event, BaseException], ...] = ()
 
     @property
     def ok(self) -> bool:
-        """Whether the swap landed and every dependant was told."""
-        return not self.failed
+        """Whether the swap landed, the old generation let go, and the new one is serving."""
+        return not self.failed and self.published is None
 
 
 def default_rule(
@@ -212,10 +220,13 @@ def _in_order(keys: Iterable[ComponentKey], order: Sequence[ComponentIdentity]) 
 
 
 def _level_of(state: ComponentState) -> ComponentState:
-    """The level a replacement is brought to: what the instance it takes over was *serving* at.
+    """The level a replacement is *published* at: what the instance it takes over was serving at.
 
     A drained instance counts as loaded rather than as draining — the replacement is a fresh
     instance, and asking it to finish somebody else's work is asking it to be born halfway down.
+
+    Anything below ``ENABLED`` is reached by the move that builds the generation, so what this
+    decides is not only where a swap ends up but whether it has a publish segment at all.
     """
     return ComponentState.ENABLED if state is ComponentState.ENABLED else ComponentState.LOADED
 
@@ -465,21 +476,39 @@ class Assembly:
         has to be up under it, or there is nothing to swap for.
 
         The declaration moves first, so a generation the registry will not take costs nothing: it is
-        refused before an instance is built, and the key keeps answering what it answered. The new
-        instance then comes up to the level the old one *served* at, which is what makes this a change
-        of instance rather than a change of level; one that cannot come up is taken back down, the old
-        declaration is put back, and the failure is raised with the key exactly as it was found.
+        refused before an instance is built, and the key keeps answering what it answered.
 
-        Once the new instance is the one up, the dependants are told (:meth:`_notify`) and the old
-        instance is taken down last, so the gap a reader can see is the instant between the two
-        instances and nothing wider. What a dependant says about being told is *reported*, not raised —
-        the swap has landed either way — and so is an old instance whose ``unload`` refuses: it is down
-        regardless (that is what the state machine commits), and the map says which key complained.
+        The new generation is then built and brought to ``LOADED`` — ``load`` has run, so its fields
+        read and its requirements resolve, and nothing it does on ``enable`` has happened — and only
+        after it answers the key and the generation it replaced has let go is it brought to the level
+        that one *served* at. That is what keeps a registration made on the way up (a matcher in a
+        shared dispatcher, a row in a table) from being live twice: the old generation is gone before
+        the new one starts serving. It is also what makes this a change of instance rather than a
+        change of level.
 
-        Both generations are reported, and both at this key: the new one's as it comes up, and the
-        quiet retreat of the old one afterwards. ``event.instance`` is what tells the two apart, so a
-        ledger sees the hand-over instead of a gap, and a handler that only wants the current answer
-        asks the table (``instance(key) is event.instance``).
+        The key moves before the old generation is torn down, not after: a key that answered nothing
+        while the old one unloaded would be the gap this verb exists to avoid. So what a reader sees
+        during that teardown is the new generation at ``LOADED`` — built, prepared, and not yet
+        taking work — and publishing it has to come after, because the old generation has to be done
+        with whatever the two would otherwise be doing at the same time.
+
+        A key that rests at ``LOADED`` already has no publish segment: nothing it replaced was
+        serving, so the swap is the one move it always was.
+
+        Everything that raises happens before the key is touched — a declaration the registry will
+        not take, and a generation that will not come up, which is taken back down and leaves the old
+        declaration and the old instance exactly as they were found. Everything after the swap is
+        *reported*: a dependant that objected to being told, an old instance whose ``unload`` refused
+        (it is down regardless — that is what the state machine commits), and a new instance that
+        would not be put into service. The last is not a failed swap: the key answers this
+        generation, and what failed is its ``enable``, so it rests at ``LOADED`` with the refusal in
+        :attr:`Replacement.published`.
+
+        Both generations are reported, and both at this key, in the order they happened: the new
+        one's as it comes up, the quiet retreat of the one it replaced, and the new one's ``enable``
+        last of all. ``event.instance`` is what tells the two apart, so a ledger sees the hand-over
+        instead of a gap, and a handler that only wants the current answer asks the table
+        (``instance(key) is event.instance``).
         """
         if key not in self._up:
             raise ValueError(f"nothing is up under {key}")
@@ -488,16 +517,20 @@ class Assembly:
         superseded = self._registry.declaration(key)
         self._registry.redeclare(declaration)
         old = self._up[key]
+        publish = _level_of(old.state.state)
         instance = declaration.build()
         attach(instance, key, self._rule)
         self._watch(key, instance)
         failed: dict[ComponentKey, BaseException] = {}
+        published: BaseException | None = None
         watched: list[tuple[Event, BaseException]] = []
         with self._staging() as staged:
             try:
                 try:
-                    await self._manager.migrate(instance, _level_of(old.state.state))
+                    await self._manager.migrate(instance, ComponentState.LOADED)
                 except (asyncio.CancelledError, Exception):
+                    # Nothing has been published and the key has not moved: put the declaration back
+                    # and take the generation that never happened down again.
                     self._registry.redeclare(superseded)
                     _ = await self._shutdown(instance)
                     raise
@@ -506,9 +539,20 @@ class Assembly:
                 error = await self._shutdown(old)
                 if error is not None:
                     failed[key] = error
+                if publish is ComponentState.ENABLED:
+                    try:
+                        await self._manager.migrate(instance, ComponentState.ENABLED)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as refusal:  # noqa: BLE001 - reported, not raised
+                        # The key answers this generation either way: what the refusal leaves is the
+                        # level it rests at, which is a fact about the swap rather than about it.
+                        published = refusal
             finally:
                 watched.extend(self._deliver(staged))
-        return instance if not failed and not watched else Replacement(instance, failed, tuple(watched))
+        if not failed and published is None and not watched:
+            return instance
+        return Replacement(instance, failed, published, tuple(watched))
 
     @contextlib.contextmanager
     def _staging(self) -> Generator[list[Event], None, None]:

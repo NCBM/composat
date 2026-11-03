@@ -124,12 +124,35 @@ class Bashful(Component):
     """A component that will not be put into service."""
 
     async def enable(self) -> None:
-        raise RuntimeError("enable refused")
+        await refusing_enable(self)
+
+
+class Announced(Component):
+    """A component whose place in a shared table is taken in ``enable`` and given back in ``disable``.
+
+    The plugin-shaped side effect a swap has to keep single: whatever the table is — a dispatcher, a
+    registry of handlers — a generation that has not given its place back is still being called.
+    """
+
+    live: ClassVar[list[Component]] = []
+    peak: ClassVar[int] = 0
+
+    async def enable(self) -> None:
+        Announced.live.append(self)
+        Announced.peak = max(Announced.peak, len(Announced.live))
+
+    async def disable(self) -> None:
+        Announced.live.remove(self)
 
 
 async def refusing_load(self: Component) -> None:
     """A lifecycle hook that refuses, for a generation written up as a class dict."""
     raise RuntimeError("load refused")
+
+
+async def refusing_enable(self: Component) -> None:
+    """The same, one step later: the generation is built and will not be put into service."""
+    raise RuntimeError("enable refused")
 
 
 def generation(name: str, **body: object) -> type[Component]:
@@ -276,6 +299,17 @@ class TestReport:
         replacement = Replacement(Engine())
 
         assert replacement.ok
+        assert replacement.failed == {}
+        assert replacement.published is None
+
+    def test_a_swap_whose_new_generation_would_not_be_published_is_not_ok(self) -> None:
+        instance = Engine()
+
+        replacement = Replacement(instance, published=RuntimeError("enable refused"))
+
+        # The swap landed: the key answers ``instance``, and what failed is the level it rests at.
+        assert not replacement.ok
+        assert replacement.instance is instance
         assert replacement.failed == {}
 
     def test_a_complaining_dependant_is_reported_apart_from_the_instance(self) -> None:
@@ -612,6 +646,54 @@ class TestSwapping:
 
         assert state_of(assembly, at(Store)) is ComponentState.LOADED
 
+    def test_a_generation_is_not_serving_while_the_one_before_it_still_is(self) -> None:
+        Announced.live.clear()
+        Announced.peak = 0
+        assembly = Assembly(declaring(Declaration(Announced)))
+        _ = run(assembly.start(at(Announced)))
+
+        successor = generation("Announced", enable=Announced.enable, disable=Announced.disable)
+        _ = run(assembly.replace(at(Announced), Declaration(successor)))
+
+        assert Announced.peak == 1, "the old generation gave its place back before the new one took one"
+        assert len(Announced.live) == 1
+
+    def test_a_loaded_key_is_swapped_without_a_publish_segment(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store), enable=False))
+        seen = watching(assembly)
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+
+        assert [event.operation for event in seen] == [Operation.load, Operation.unload]
+
+    def test_a_generation_quiesced_first_is_held_at_loaded(self) -> None:
+        # What a canary needs, written with the verbs there are rather than with a flag on ``replace``:
+        # the key answers the new generation once it is built, and it starts serving when told to.
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        _ = run(assembly.quiesce(at(Store)))
+
+        _ = run(assembly.replace(at(Store), Declaration(generation("Store"))))
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+        _ = run(assembly.enable(at(Store)))
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+
+    def test_a_new_generation_that_will_not_be_put_into_service_is_reported(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        old = assembly.instance(at(Store))
+
+        result = run(assembly.replace(at(Store), Declaration(generation("Store", enable=refusing_enable))))
+
+        assert isinstance(result, Replacement)
+        assert isinstance(result.published, RuntimeError)
+        assert not result.ok
+        assert assembly.instance(at(Store)) is result.instance
+        assert assembly.instance(at(Store)) is not old
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
     def test_a_dependant_is_told_what_changed(self) -> None:
         assembly = Assembly(declaring(Declaration(Watching), Declaration(Store)))
         _ = run(assembly.start(at(Watching)))
@@ -739,16 +821,18 @@ class TestWhatIsReported:
         new = assembly.instance(at(Store))
         assert [event.instance for event in seen] == [
             new,
+            old,
+            old,
+            old,
             new,
-            old,
-            old,
-            old,
-        ], "the new generation comes up first, and the old one retreats after the key has moved"
+        ], "the new generation is built, the old one retreats, and only then is the new one serving"
         assert {event.key for event in seen} == {at(Store)}
-        assert [event.operation for event in seen if event.instance is old] == [
+        assert [event.operation for event in seen] == [
+            Operation.load,
             Operation.drain,
             Operation.disable,
             Operation.unload,
+            Operation.enable,
         ]
 
     def test_a_step_a_hook_put_back_is_reported_as_undone(self) -> None:
