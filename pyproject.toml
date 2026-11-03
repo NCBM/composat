@@ -31,13 +31,13 @@ pythonVersion = "3.12"
 distribution = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "examples"]
 pythonpath = ["src"]
 addopts = "--strict-markers"
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "examples"]
 target-version = "py312"
 line-length = 120
 
@@ -73,3 +73,4 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PT011", "PT018"]
+"examples/**" = ["S101", "PT011", "PT018"]
