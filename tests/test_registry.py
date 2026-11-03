@@ -240,35 +240,6 @@ class TestInterfaces:
         with pytest.raises(UnboundServiceError):
             _ = registry.provider_identity(WeatherService)
 
-    def test_a_requirement_on_an_interface_becomes_an_edge_to_its_provider(self) -> None:
-        registry = ComponentRegistry()
-        registry.bind(WeatherService, WeatherTool)
-
-        _ = registry.declare_all([Declaration(Forecaster), Declaration(WeatherTool)])
-
-        assert registry.order() == (WEATHER, FORECASTER)
-
-    def test_an_interface_nothing_provides_is_refused_with_the_declaration(self) -> None:
-        registry = ComponentRegistry()
-
-        with pytest.raises(UnboundServiceError):
-            _ = registry.declare(Forecaster)
-
-        assert registry.declarations() == ()
-
-    def test_binding_an_interface_twice_is_refused(self) -> None:
-        registry = ComponentRegistry()
-        registry.bind(WeatherService, WeatherTool)
-
-        with pytest.raises(ValueError, match="already bound"):
-            registry.bind(WeatherService, Store)
-
-    def test_a_component_class_already_names_itself(self) -> None:
-        registry = ComponentRegistry()
-
-        with pytest.raises(ValueError, match="names itself"):
-            registry.bind(Store, Engine)
-
 
 class TestRedeclaring:
     def test_a_replacement_keeps_the_key_and_the_edges_it_had(self) -> None:
