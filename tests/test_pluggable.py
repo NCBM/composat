@@ -19,7 +19,15 @@ from typing import cast
 
 import pytest
 
-from composat import Component, ComponentIdentity
+from composat import (
+    Assembly,
+    Component,
+    ComponentIdentity,
+    ComponentKey,
+    ComponentRegistry,
+    Declaration,
+    Unit,
+)
 from composat.std.pluggable import UnitLoader, reload_module
 
 
@@ -81,6 +89,45 @@ class Beta(Component):
     pass
 """
 
+_ALPHA_EDITED = """
+from composat import Component
+
+value = 2
+
+class Alpha(Component):
+    pass
+"""
+
+_ALPHA_CONSTRUCTED = """
+from composat import Component
+
+class Alpha(Component):
+    def __init__(self, dsn: str) -> None:
+        super().__init__()
+        self.dsn = dsn
+"""
+
+_ALPHA_EDITED_CONSTRUCTED = """
+from composat import Component
+
+value = 2
+
+class Alpha(Component):
+    def __init__(self, dsn: str) -> None:
+        super().__init__()
+        self.dsn = dsn
+"""
+
+_TWO_ALPHAS = """
+from composat import Component
+
+class Alpha(Component):
+    pass
+
+class Gamma(Component):
+    pass
+"""
+
 
 def value_in(module_name: str) -> object:
     """What ``module_name`` binds to ``value``: a case cannot name a module it wrote as a string.
@@ -98,6 +145,31 @@ def requirements_in(components: tuple[type[Component], ...]) -> int:
     generation's source from another's without naming the class it wrote as a string.
     """
     return sum(len(component.requirements()) for component in components)
+
+
+def only_component(loader: UnitLoader, name: str) -> type[Component]:
+    """The one component the unit ``name`` holds, which is the class a swap moves a key onto."""
+    unit = loader.unit(name)
+    assert isinstance(unit, Unit)
+    assert len(unit.components) == 1
+    return unit.components[0]
+
+
+def at(component: type[Component], instance: str = "") -> ComponentKey:
+    """The key ``component`` answers at under ``instance``."""
+    return ComponentKey(component.identity(), instance)
+
+
+def wired(*declarations: Declaration) -> Assembly:
+    """An assembly holding ``declarations``, which is what a swap needs to find keys in."""
+    registry = ComponentRegistry()
+    _ = registry.declare_all(declarations)
+    return Assembly(registry)
+
+
+def kept(instance: Component) -> object:
+    """What ``instance`` was constructed with: a case cannot name an attribute a string declared."""
+    return cast("object", instance.__dict__.get("dsn"))
 
 
 class TestWhatTheLoaderHolds:
@@ -237,6 +309,132 @@ class TestReloading:
             _ = loader.reload_module("alpha")
         assert sys.modules["alpha"] is before.module
         assert loader.unit("alpha") is before
+
+
+class TestSwappingInstances:
+    def test_the_key_is_put_behind_the_new_generation(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha))
+        _ = run(assembly.start(key))
+        before = assembly.instance(key)
+        assert before is not None
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
+        after = loader.reload_module("alpha").unit
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        replaced = assembly.instance(key)
+        assert result.swapped == (key,)
+        assert replaced is not None
+        assert replaced is not before
+        assert type(replaced) is after.components[0]
+
+    def test_what_it_is_built_with_survives_the_swap(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA_CONSTRUCTED)
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha, kwargs={"dsn": "memory"}))
+        _ = run(assembly.start(key))
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED_CONSTRUCTED)
+        _ = loader.reload_module("alpha")
+        _ = run(loader.swap_instances(assembly, "alpha"))
+
+        replaced = assembly.instance(key)
+        assert replaced is not None
+        assert kept(replaced) == "memory"
+
+    def test_a_class_the_new_generation_dropped_is_reported(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _TWO_ALPHAS)
+        loader = loaded(dropins)
+        unit = loader.unit("alpha")
+        assert unit is not None
+        alpha, gamma = unit.components
+        assembly = wired(Declaration(alpha), Declaration(gamma))
+        _ = run(assembly.start(at(alpha), at(gamma)))
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
+        _ = loader.reload_module("alpha")
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        assert result.unmatched == (at(gamma),)
+        assert result.swapped == (at(alpha),)
+        assert type(assembly.instance(at(gamma))) is gamma
+
+    def test_a_key_of_another_unit_is_left_alone(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        _ = module_at(dropins, "zeta.py", "from composat import Component\n\nclass Zeta(Component):\n    pass\n")
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        zeta = only_component(loader, "zeta")
+        assembly = wired(Declaration(alpha), Declaration(zeta))
+        _ = run(assembly.start(at(alpha), at(zeta)))
+        held = assembly.instance(at(zeta))
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
+        _ = loader.reload_module("alpha")
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        assert result.swapped == (at(alpha),)
+        assert assembly.instance(at(zeta)) is held
+
+    def test_a_key_already_on_the_current_generation_is_passed_over(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha))
+        _ = run(assembly.start(key))
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
+        _ = loader.reload_module("alpha")
+        _ = run(loader.swap_instances(assembly, "alpha"))
+        held = assembly.instance(key)
+        again = run(loader.swap_instances(assembly, "alpha"))
+
+        assert again.swapped == ()
+        assert assembly.instance(key) is held
+
+    def test_a_generation_the_registry_will_not_take_is_that_keys_failure(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        _ = module_at(dropins, "store.py", "from composat import Component\n\nclass Store(Component):\n    pass\n")
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        store = only_component(loader, "store")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha), Declaration(store))
+        _ = run(assembly.start(key, at(store)))
+
+        _ = module_at(
+            dropins,
+            "alpha.py",
+            textwrap.dedent(
+                """
+                from composat import Component, require
+
+                from store import Store
+
+                class Alpha(Component):
+                    store: Store = require()
+                """
+            ).lstrip(),
+        )
+        _ = loader.reload_module("alpha")
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        assert list(result.failed) == [key]
+        assert type(assembly.instance(key)) is alpha
+
+    def test_a_name_this_loader_does_not_hold_is_refused(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        loader = loaded(dropins)
+
+        with pytest.raises(ValueError, match="is not one of the modules"):
+            _ = run(loader.swap_instances(wired(), "gamma"))
 
 
 class TestStaleness:

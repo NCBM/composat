@@ -12,8 +12,10 @@ Three things the component deliberately does not do:
   *application* put on the path, so making those modules importable is the deployment's job; a root no
   ``sys.path`` entry holds is answered by name when the load fails, not repaired here.
 * **it declares nothing.** A loaded module exports component classes; whether to declare them, at
-  which qualifier, and whether to bring them up is the application's assembly. This component moves
-  *code*, not instances — which is what keeps a reload from having to know anything about keys.
+  which qualifier, and whether to bring them up is the application's assembly. The two verbs here keep
+  the halves apart — :meth:`UnitLoader.reload_module` moves *code*, and
+  :meth:`UnitLoader.swap_instances` moves *instances* onto it, reading the keys it moves off the
+  assembly rather than keeping a record of what the deployment declared.
 * **it does not watch anything.** Which modules moved is :meth:`UnitLoader.stale`; when it is worth
   acting on that is the application's loop, because it is a decision about time.
 
@@ -33,15 +35,18 @@ from __future__ import annotations
 import ast
 import importlib.util
 import sys
-from collections.abc import Collection
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import cast, override
 
 from composat import (
+    Assembly,
     Component,
     ComponentIdentity,
+    ComponentKey,
+    Declaration,
     Unit,
     components_of,
     fingerprint_of,
@@ -69,6 +74,29 @@ class ReloadResult:
     unit: Unit
     rewritten: tuple[str, ...] = ()
     requirements_changed: tuple[ComponentIdentity, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SwapResult:
+    """What swapping the instances of one unit did, key by key.
+
+    ``swapped`` names the keys that now answer this loader's current generation, in the order they were
+    taken — the assembly's own order, which is the order they came up, so a provider is replaced before
+    the dependants that will be told about it. ``unmatched`` names the keys whose type the new
+    generation no longer holds, a class deleted or renamed by the edit: they keep running the generation
+    they were built with until the application declares the new class and takes the old key down, which
+    is the manifest's business rather than this one's. ``failed`` is what ``replace`` raised for a key —
+    a generation the registry will not take, a new instance that would not come up.
+
+    A key left alone is in none of them: one that belongs to another unit, and one already running the
+    class the current generation holds. Reported rather than raised, key by key, because a unit is not
+    one decision — one component whose new text is wrong is that component's problem, and the rest of
+    the unit can still move.
+    """
+
+    swapped: tuple[ComponentKey, ...] = ()
+    unmatched: tuple[ComponentKey, ...] = ()
+    failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
 
 
 def reload_module(name: str, *, scope: Collection[str]) -> ReloadResult:
@@ -476,6 +504,72 @@ class UnitLoader(Component):
         result = reload_module(name, scope=self.scope())
         self._generations[name] = _generation_of(result.unit)
         return result
+
+    async def swap_instances(self, assembly: Assembly, name: str) -> SwapResult:
+        """Put this loader's current generation of ``name`` behind every key built from an older one.
+
+        The other half of a reload, and the half a code move cannot do: :meth:`reload_module` moves the
+        *module*, and a running instance keeps the class it was built with — so a deployment that
+        reloads and stops there has the new code in ``sys.modules`` and the old code still serving.
+
+        The keys are read off the assembly rather than kept here. An instance's identity is its class's
+        own path, so "what is running from this unit" is a reading of the table; a second record of
+        which keys a unit owns would be a second truth about the same thing, and one that goes stale
+        the moment a key is admitted or evicted behind its back.
+
+        A key is replaced with the class at the *same* identity in the current generation, which is what
+        a reload keeps, and built with the key's own declaration (:meth:`Assembly.declaration`), so
+        constructor arguments survive a swap the caller never wrote down: only the class moves. A class
+        the edit renamed or deleted has no counterpart, and is reported in
+        :attr:`SwapResult.unmatched` rather than guessed at. A key already running the current class is
+        passed over, so calling this after every reload is safe, including for one already swapped.
+
+        Everything is reported rather than raised, key by key. One generation the registry will not
+        take — a type that now asks for something else — is that key's failure, and the others still
+        move. A cancelled swap stops where it is: cancellation is not a per-key outcome.
+        """
+        generation = self._generations.get(name)
+        if generation is None:
+            raise ValueError(f"{name!r} is not one of the modules {self.root} loaded")
+        available = {ComponentIdentity.of(cls): cls for cls in generation.unit.components}
+        swapped: list[ComponentKey] = []
+        unmatched: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        # The keys as they were when the swap started: replacing one moves the table, and this walks the
+        # picture it took rather than a picture that changes under it.
+        keys = assembly.keys()
+        for key in keys:
+            instance = assembly.instance(key)
+            if instance is None:  # pragma: no cover - a key the table named is one it holds
+                continue
+            identity = ComponentIdentity.of(type(instance))
+            if not _belongs(identity, name):
+                continue
+            current = available.get(identity)
+            if current is None:
+                unmatched.append(key)
+                continue
+            if type(instance) is current:
+                continue
+            declared = assembly.declaration(key)
+            fresh = Declaration(current, instance=declared.instance, args=declared.args, kwargs=declared.kwargs)
+            try:
+                _ = await assembly.replace(key, fresh)
+            except Exception as error:  # noqa: BLE001 - one key's failure is reported, not raised
+                failed[key] = error
+                continue
+            swapped.append(key)
+        return SwapResult(tuple(swapped), tuple(unmatched), failed)
+
+
+def _belongs(identity: ComponentIdentity, name: str) -> bool:
+    """Whether ``identity`` was written in ``name`` or below it: which unit a class came from.
+
+    The same rule :func:`composat.loader.components_of` applies to a namespace, asked backwards: a
+    class re-exported from a subpackage keeps the subpackage in ``__module__``, so a package's own
+    components answer for the package.
+    """
+    return identity.module == name or identity.module.startswith(f"{name}.")
 
 
 def _generation_of(unit: Unit) -> _Generation:
