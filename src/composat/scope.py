@@ -20,7 +20,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Protocol
+from typing import Protocol, final
 
 type Disposable = Callable[[], object | Awaitable[object]]
 type Revoke = Callable[[], Awaitable[None]]
@@ -86,6 +86,7 @@ def _report(loop: asyncio.AbstractEventLoop, effect: Disposable, error: BaseExce
     loop.call_exception_handler({"message": f"a timed effect ({name_of(effect)}) failed", "exception": error})
 
 
+@final
 @dataclass(eq=False, slots=True)
 class EffectScope:
     _stack: list[Disposable] = field(default_factory=list)

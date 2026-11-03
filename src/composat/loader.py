@@ -47,7 +47,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import CodeType, ModuleType
-from typing import override
+from typing import final, override
 
 from .component import Component
 
@@ -63,6 +63,7 @@ name something else put in ``sys.modules`` is told apart from one this loader se
 """
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class LoadedUnit:
     """What a module was, at the moment it was loaded: recorded on the module, read back from it.
@@ -113,6 +114,7 @@ def loaded_unit(module: ModuleType) -> LoadedUnit | None:
     return found if isinstance(found, LoadedUnit) else None
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Unit:
     """One loaded module: where it came from, the module itself, what it exports, and its source hash.

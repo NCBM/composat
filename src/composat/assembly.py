@@ -78,6 +78,7 @@ import contextvars
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
+from typing import final
 
 from .component import Component, RequirementResolver, attach, requirements_of
 from .errors import KeyInTransitError, ServiceNotUpError
@@ -89,6 +90,7 @@ from .spec import RequirementSpec
 from .state import HELD, READABLE, Committed, ComponentState, Operation, Unsubscribe
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Event:
     """One move, as this assembly committed it: which key, which instance, and the two states.
@@ -124,6 +126,7 @@ to report, and an instance driven straight through the manager is exactly that c
 """
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class AssemblyResult:
     """What a batch did: the keys it carried through, the ones that failed, and what an observer said.
@@ -152,6 +155,7 @@ class AssemblyResult:
         return not self.failed
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Replacement:
     """What a swap left behind: the instance the key answers with, and what went wrong on the way.
@@ -261,6 +265,7 @@ def _level_of(state: ComponentState) -> ComponentState:
     return ComponentState.ENABLED if state is ComponentState.ENABLED else ComponentState.LOADED
 
 
+@final
 class Assembly:
     """The instances this process has up, the rule they reach each other by, and the two batch verbs.
 

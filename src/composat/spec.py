@@ -9,8 +9,10 @@ requirements_of` a pure query.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import final
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class RequirementSpec:
     """One declared requirement: the field it is read as, the contract it asks for, its extras.

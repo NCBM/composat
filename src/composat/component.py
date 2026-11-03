@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from typing import Annotated, ClassVar, Protocol, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, ClassVar, Protocol, cast, final, get_args, get_origin, get_type_hints
 
 from .context import current_or_none
 from .errors import UnboundRequirementError
@@ -55,6 +55,7 @@ class RequirementResolver(Protocol):
         ...
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Binding:
     """Where one instance's requirements are read from: the key it answers at, and the rule it asks.

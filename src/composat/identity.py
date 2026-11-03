@@ -13,9 +13,10 @@ reload, which is worth documenting rather than refusing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self, override
+from typing import Self, final, override
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class ComponentIdentity:
     """Who a component *type* is: the module it is defined in, and its qualified name there.
@@ -45,6 +46,7 @@ class ComponentIdentity:
         return f"{self.module}.{self.qualname}"
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class ComponentKey:
     """One instance: an identity plus the qualifier that tells instances of it apart.

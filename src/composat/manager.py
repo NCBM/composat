@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from typing import final
 
 from .component import Component, reopen_epoch
 from .errors import LifecycleReentryError
@@ -80,6 +81,7 @@ async def _drive(component: Component, operation: Operation) -> None:
             await component.drain()
 
 
+@final
 class ComponentManager:
     """The moves that can be made on one component, and the hooks each of them drives.
 

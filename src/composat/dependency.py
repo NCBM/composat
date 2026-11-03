@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable
 from graphlib import TopologicalSorter
-from typing import Generic
+from typing import Generic, final
 
 from typing_extensions import TypeVar
 
@@ -56,6 +56,7 @@ class DependencyInUseError(DependencyError, Generic[Node]):
         self.dependents = dependents
 
 
+@final
 class DependencyGraph[Node: Hashable]:
     """An acyclic graph whose edge ``node → dependency`` reads "node needs dependency".
 

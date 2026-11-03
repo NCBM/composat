@@ -45,7 +45,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import cast, override
+from typing import cast, final, override
 
 from composat import (
     Assembly,
@@ -63,6 +63,7 @@ from composat import (
 )
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class ReloadResult:
     """What one reload did: the generation it left in place, and what else moved because of it.
@@ -83,6 +84,7 @@ class ReloadResult:
     requirements_changed: tuple[ComponentIdentity, ...] = ()
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class SwapResult:
     """What swapping the instances of one unit did, key by key.
@@ -421,6 +423,7 @@ class _Generation:
     sources: dict[Path, str]
 
 
+@final
 class UnitLoader(Component):
     """The modules loaded from one root, the scope a reload of any of them may touch, and their files.
 

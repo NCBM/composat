@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import final
 
 from .component import Component, requirements_of
 from .dependency import DependencyGraph, DependencyInUseError
@@ -34,6 +35,7 @@ from .identity import ComponentIdentity, ComponentKey
 from .spec import RequirementSpec
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Declaration:
     """A component this process knows how to build, and the qualifier that makes it *this* instance.
@@ -63,6 +65,7 @@ class Declaration:
         return self.component_class(*self.args, **self.kwargs)
 
 
+@final
 class ComponentRegistry:
     """The declared components, keyed by instance key and ordered by the identity graph."""
 

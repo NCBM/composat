@@ -134,6 +134,7 @@ class ComponentStateError(RuntimeError):
         self.actual = actual
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Migration:
     """A move between two states, as the verbs that walk it.
@@ -177,6 +178,7 @@ type Advance = Callable[[Operation], Undo]
 """The one writer a move is given: commit a verb, and be answered with its undo."""
 
 
+@final
 @dataclass(frozen=True, slots=True)
 class Committed:
     """One move as this instance committed it: the verb, and the two states it spans.
