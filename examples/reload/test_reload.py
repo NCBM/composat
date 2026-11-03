@@ -210,3 +210,32 @@ def test_a_packaged_dropin_is_one_component_however_many_names_its_entry_gives_i
         assert [str(key.identity) for key in held] == ["plug.component.Gear"]
 
     run(main())
+
+
+def test_a_burst_of_edits_leaves_one_instance_and_no_generation_behind(plugins: Path) -> None:
+    async def main() -> None:
+        seen: list[str] = []
+        rewrite(plugins / "widget.py", generation("Widget", 1))
+        loader = UnitLoader(plugins)
+        await loader.load()
+        registry = ComponentRegistry()
+        assembly = Assembly(registry, up={})
+
+        declarations = [Declaration(cls, args=(seen,)) for cls in declared(loader, "widget").values()]
+        _ = registry.declare_all(declarations)
+        _ = await assembly.start(*[declaration.key for declaration in declarations])
+
+        for version in range(2, 21):
+            rewrite(plugins / "widget.py", generation("Widget", version))
+            assert loader.stale() == ("widget",)
+            result = await rebuild(loader, assembly, "widget")
+            assert [key.identity.qualname for key in result.swap.swapped] == ["Widget"]
+            assert len(assembly.keys()) == 1
+
+        assert loader.stale() == ()
+        expected = ["load 1"]
+        for version in range(2, 21):
+            expected += [f"load {version}", f"unload {version - 1}"]
+        assert seen == expected
+
+    run(main())
