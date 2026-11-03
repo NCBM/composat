@@ -18,9 +18,9 @@ class RequirementSpec:
     """One declared requirement: the field it is read as, the contract it asks for, its extras.
 
     ``service`` is a component type or a ``Protocol``, the two spellings of a contract. ``extras`` is
-    everything else the annotation said (``Annotated[Store, RequestScoped()]``), carried for the
-    resolver to read: ``RequestScoped`` is its vocabulary, and a requirement carrying nothing beyond
-    its service resolves the same way.
+    everything else the annotation said — an ``Annotated`` layer's metadata, which a resolver is free
+    to read and this record only carries — so a requirement annotated with nothing beyond its service
+    is answered the same way as one declared bare.
     """
 
     name: str
