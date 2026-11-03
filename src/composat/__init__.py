@@ -15,8 +15,10 @@ see ``archive/pre-rewrite`` for the design all of this is rebuilt from.
 from . import context as context
 from .assembly import Assembly as Assembly
 from .assembly import AssemblyResult as AssemblyResult
+from .assembly import Candidates as Candidates
 from .assembly import Event as Event
 from .assembly import Replacement as Replacement
+from .assembly import answering_from as answering_from
 from .assembly import default_rule as default_rule
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
 from .component import Component as Component

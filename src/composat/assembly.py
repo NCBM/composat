@@ -56,18 +56,19 @@ what a failed admission leaves, which :meth:`Assembly.start` retries and :meth:`
 clears.
 
 The rule is a function of the table rather than a method of the thing that fills it
-(:func:`default_rule`), and that is a reading rather than a style. A requirement is answered from
+(:func:`answering_from`), and that is a reading rather than a style. A requirement is answered from
 whatever is up *now*, so the rule has to see the table as it fills; taking the table as its argument
-is what lets a rule be built before there is anything to answer with, and what lets an application
-build a chain whose tail is the framework's own rule without either of them being installed later::
+is what lets a rule be built before there is anything to answer with, and what lets a deployment say
+*where* a requirement may be found without owning the rest of the answer::
 
     up: dict[ComponentKey, Component] = {}
-    chain = Chain(PerRequest(...), tail=default_rule(registry, up))
-    assembly = Assembly(registry, up=up, rule=chain)
+    rule = answering_from(registry, up, some_candidates)
+    assembly = Assembly(registry, up=up, rule=rule)
 
-So an assembly does not own a rule slot to assign into — it is handed one — and the table it was
-handed is the table it fills: ``up`` is mutated, never rebound, or the rule would go on reading a
-table nothing writes to.
+:func:`default_rule` is that mechanism over the narrowest list there is — the asker's own qualifier —
+and ``composat.std.root`` is another list over the same mechanism. So an assembly does not own a rule
+slot to assign into — it is handed one — and the table it was handed is the table it fills: ``up`` is
+mutated, never rebound, or the rule would go on reading a table nothing writes to.
 """
 
 from __future__ import annotations
@@ -192,29 +193,40 @@ class Replacement:
         return not self.failed and self.published is None
 
 
-def default_rule(
+type Candidates = Callable[[ComponentKey, ComponentIdentity], Iterable[ComponentKey]]
+"""Where a requirement may be looked up, given the asker and the identity it names.
+
+The asker's own qualifier first is not something this shape can enforce, and it is the one thing
+every policy has to keep: a list that starts anywhere else answers a caller from another instance
+while its own is up. Everything after that first place is what a deployment is choosing.
+"""
+
+
+def answering_from(
     registry: ComponentRegistry,
     instances: Mapping[ComponentKey, Component],
+    candidates: Candidates,
+    /,
 ) -> RequirementResolver:
-    """The framework's own answer: what is up under the asker's qualifier, or a refusal.
+    """The framework's answer, over the places ``candidates`` says a requirement may be found.
 
     Built from two things it does not own — the registry says which identity a contract names, the
     table says which instances are up — and neither is read at build time, so the closure goes on
     answering from the table as it fills: a rule made before anything is up is still the rule in
     force once something is.
 
-    The qualifier is the whole lookup. Instances of one identity are told apart by it, so a caller
-    served by the provider at ``tenant-a`` reads its requirements from ``tenant-a`` as well; a slot
-    that is declared and is not up is a miss (``ServiceNotUpError``), never a reason to answer from
-    another instance, which would be answering a question the caller did not ask.
+    The list is looked through in order and the first place with something up answers. Where nothing
+    is found, the *first* place is what the refusal names: that is where the caller's own qualifier
+    put the requirement, and pointing at a further stop would say the caller asked for that one.
 
     A level is part of the answer, and whose level it is, is the caller's. An instance that is serving
     needs a provider that is serving too; one that is loading or unloading is preparing or letting go
     and reaches whatever the assembly holds (:data:`~composat.state.READABLE`). So the table is read
     twice — once for the provider, once for the asker — and a caller the table does not place is not
     policed at all: the assembly cannot say such a caller is doing work, and refusing on a guess would
-    be worse than answering with something it does hold. Both misses say which they were, and who
-    asked: an instance that is up and not serving is not the same incident as a hole in the table.
+    be worse than answering with something it does hold. Both refusals say which they were, and who
+    asked: an instance that is up and not serving is not the same incident as a hole in the table. The
+    policing is the caller's whichever place answered, so a wider list cannot loosen it.
 
     A ``RequirementSpec`` is accepted as the whole requirement rather than as its service, so an
     annotation that carries extras arrives intact; this rule has no vocabulary to read them with, and
@@ -227,10 +239,12 @@ def default_rule(
 
     def resolve(key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
         _ = effects
-        provider = ComponentKey(registry.provider_identity(requirement.service), key.instance)
-        instance = instances.get(provider)
-        if instance is None:
-            raise ServiceNotUpError(provider, asked_from=key)
+        identity = registry.provider_identity(requirement.service)
+        places = tuple(candidates(key, identity))
+        found = next(((place, instances[place]) for place in places if place in instances), None)
+        if found is None:
+            raise ServiceNotUpError(places[0] if places else ComponentKey(identity, key.instance), asked_from=key)
+        provider, instance = found
         asker = instances.get(key)
         readable = None if asker is None else READABLE.get(asker.state.state)
         level = instance.state.state
@@ -239,6 +253,30 @@ def default_rule(
         return instance
 
     return resolve
+
+
+def _own_qualifier(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """The one place :func:`default_rule` looks: the asker's own qualifier, and nothing past it."""
+    return (ComponentKey(identity, key.instance),)
+
+
+def default_rule(
+    registry: ComponentRegistry,
+    instances: Mapping[ComponentKey, Component],
+) -> RequirementResolver:
+    """The framework's own answer: what is up under the asker's qualifier, or a refusal.
+
+    The qualifier is the whole lookup. Instances of one identity are told apart by it, so a caller
+    served by the provider at ``tenant-a`` reads its requirements from ``tenant-a`` as well; a slot
+    that is declared and is not up is a miss (``ServiceNotUpError``), never a reason to answer from
+    another instance, which would be answering a question the caller did not ask.
+
+    The mechanism is :func:`answering_from`, and this is that mechanism over the shortest list there
+    is. A deployment that wants a second place — one instance at the root answering for every
+    qualifier, or a version pinned per tenant — hands its own candidates in, and keeps the level
+    policing and the refusals that are written down there.
+    """
+    return answering_from(registry, instances, _own_qualifier)
 
 
 def _in_order(keys: Iterable[ComponentKey], order: Sequence[ComponentIdentity]) -> tuple[ComponentKey, ...]:
