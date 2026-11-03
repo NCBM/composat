@@ -31,9 +31,9 @@ class ComponentState(enum.Enum):
     moment: a drain that finished is a ``disable`` away from ``LOADED``, and one that was interrupted
     has to be readable as such, because what it still owes is the work it accepted.
 
-    Not an ``IntEnum``, though the old tree's was: these four are not a scale. ``ENABLED`` is not
-    "more" than ``LOADED`` for every question a caller asks, so a comparison that happens to
-    typecheck would be a reading nobody meant.
+    An ``IntEnum`` would make the four a scale, which they are not: ``ENABLED`` is not "more" than
+    ``LOADED`` for every question a caller asks, so a comparison that happens to typecheck would be a
+    reading nobody meant.
     """
 
     UNLOADED = enum.auto()
@@ -116,10 +116,8 @@ class ComponentStateError(RuntimeError):
     """A verb was driven from a state it does not leave.
 
     Each verb leaves the states ``LEAVING`` names and commits the arrival ``ARRIVING`` names, so this
-    is a reading of the two tables rather than a rule of its own: a component is never asked to load
-    while it is loaded, and a batch asking for a level is refused where it asked instead of halfway
-    through. The refusal is raised before the hook runs, which is what makes it safe to report and go
-    on to the next key.
+    is a reading of the two tables rather than a rule of its own. It is raised before the hook runs,
+    which is what makes refusing safe to report and go on to the next key.
     """
 
     operation: Operation
@@ -144,9 +142,9 @@ class Migration:
     a caller: ``QUIESCED`` is ``migrate(component, to=LOADED)`` and a shutdown is the same call with
     another target, and neither one spells out the order it happens in.
 
-    Every pair of states is reachable today — the machine is strongly connected, ``disabling`` being
-    how a drained component is resumed — so the refusal at the end of the search is about the tables
-    staying that way, not about a case anyone can reach.
+    Every pair of states is reachable — the machine is strongly connected, ``disabling`` being how a
+    drained component is resumed — so a refusal at the end of the search means the tables stopped
+    being that way, not that a caller found an unreachable case.
     """
 
     origin: ComponentState
@@ -218,10 +216,6 @@ class ComponentStateControl:
     The state is read-only from outside: :meth:`transaction` hands out the only writer, and it is in
     force only while the lock is. A state assigned from anywhere else would be a transition nothing
     drove and nothing can order.
-
-    What a move did is reported through :meth:`observe`, and one instance's list is one instance's
-    business: there is no class-level set of callbacks here, because a shared action's subscribers
-    belong to the component that owns the action rather than to everything of one type.
 
     Final, like the other objects that hold state: there is nothing here an application has a reason
     to replace, and a subclass would be a second answer to where an instance is.
@@ -312,9 +306,8 @@ class ComponentStateControl:
         """Hold the lock for one move, and say what is being run while it is.
 
         One lock for the whole move rather than one per verb, because a composite is one operation on
-        the instance: a caller that saw ``LOADED`` in the middle of a shutdown would be reading a true
-        state to the wrong question, which is what ``pending`` is for. Nothing here puts a state back
-        — what a raising hook needs undone is its own verb, and :meth:`_commit` is what answers that.
+        the instance. Nothing here puts a state back — what a raising hook needs undone is its own
+        verb, and :meth:`_commit` is what answers that.
         """
         async with self.lock:
             self._pending = move
