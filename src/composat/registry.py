@@ -258,8 +258,11 @@ class ComponentRegistry:
 
         Reading a requirement can already fail: an interface with nothing bound to it names no
         identity, and declining it here is what puts the error where the requirement is written down.
+        One entry per identity: two fields naming the same contract are two reads of one instance, and
+        an edge is a fact about the type rather than about how many fields ask for it.
         """
-        return tuple(self.provider_identity(spec.service) for spec in requirements_of(declaration.component_class))
+        requested = (self.provider_identity(spec.service) for spec in requirements_of(declaration.component_class))
+        return tuple(dict.fromkeys(requested))
 
     def _dropped(self, *keys: ComponentKey) -> tuple[ComponentIdentity, ...]:
         """The identities whose last declaration goes with ``keys``, dependants first.

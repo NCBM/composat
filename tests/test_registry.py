@@ -50,6 +50,13 @@ class Facade(Component):
     mirror: Mirror = require()
 
 
+class Twin(Component):
+    """Two fields, one contract: two reads of the same instance rather than two edges."""
+
+    left: Store = require()
+    right: Store = require()
+
+
 class WeatherService(Protocol):
     """A service contract written as an interface: whoever answers it stays behind the name."""
 
@@ -89,6 +96,7 @@ STORAGE = ComponentIdentity.of(Store)
 ENGINE = ComponentIdentity.of(Engine)
 MIRROR = ComponentIdentity.of(Mirror)
 FACADE = ComponentIdentity.of(Facade)
+TWIN = ComponentIdentity.of(Twin)
 WEATHER = ComponentIdentity.of(WeatherTool)
 FORECASTER = ComponentIdentity.of(Forecaster)
 
@@ -191,6 +199,12 @@ class TestEdges:
 
         assert registry.order() == (STORAGE,)
         assert {declaration.key for declaration in registry.declarations()} == {first, second}
+
+    def test_two_fields_naming_one_contract_share_a_node(self) -> None:
+        registry = ComponentRegistry()
+        _ = registry.declare_all([Declaration(Store), Declaration(Twin)])
+
+        assert registry.order() == (STORAGE, TWIN)
 
     def test_a_requirement_declared_nowhere_is_refused(self) -> None:
         registry = ComponentRegistry()
