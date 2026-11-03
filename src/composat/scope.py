@@ -5,9 +5,9 @@ scope that promises to call it exactly once, last-registered first. Closing the 
 everything it still holds; a :class:`Revoke` releases everything registered after a checkpoint and
 leaves what came before.
 
-A *timed* effect is the same promise the other way round: :meth:`EffectScope.after` registers what
-should happen later, so the scope can take it back — a session that expires in ten minutes is a
-registration that a disconnect cancels, not a timer a caller has to remember.
+A *timed* effect is the same promise the other way round: what :meth:`EffectScope.after` puts on the
+stack is the timer's cancellation, so revoking, closing, or a scope that was already closed, call a
+pending effect off the same way they call off one that has run.
 
 The scope also owns an epoch's ends: :meth:`EffectScope.dispose` closes it for good and
 :meth:`EffectScope.reopen` answers the scope a new epoch starts with.
@@ -35,17 +35,16 @@ class Reclaimable(Protocol):
     """
 
     def put(self, effect: Disposable, /) -> Revoke:
-        """Register ``effect``, and answer the call that releases everything from here on."""
+        """``effect`` is registered here; the answer releases everything registered from this point on."""
         ...
 
 
 def name_of(effect: Disposable) -> str:
     """How one effect is named in a view: what it is called, never what it is.
 
-    A function or a bound method answers with its own name; a ``partial`` takes the name of the
-    callable it wraps, since that is where the work happens; anything else callable answers with its
-    type's name, which for a lambda is ``<lambda>``. Views report names because an effect is a
-    promise that something gets released exactly once, and a reader holding the callable would hold a
+    A function or a bound method answers with its own name, and a ``partial`` with the name of the
+    callable it wraps. A view reports names rather than the callables themselves because an effect is
+    a promise that something is released exactly once, and a reader holding the callable would hold a
     second chance to release it.
     """
     target: object = effect
@@ -58,17 +57,11 @@ def name_of(effect: Disposable) -> str:
 
 
 def _fire(loop: asyncio.AbstractEventLoop, scope: EffectScope, effect: Disposable) -> None:
-    """Run one timed effect, and take the work it leaves behind into the scope that asked for it.
+    """Run one timed effect; a scope that closed before the timer landed runs nothing.
 
-    A scope that closed before the timer landed runs nothing: what this scope promises is that its
-    effects are over when it is, and starting one into a closed scope is the single way it would not
-    be. That is not only the timer's cancellation doing the work — a timer due in the same turn as the
-    disposal lands here first, and starting its work then would fail on the registration below and
-    leave a task nobody owns.
-
-    An awaitable effect is awaited on a task of its own, which is registered here like any other
-    effect: the scope cancels it on the way out, and a drain can wait for it, instead of the work
-    outliving the instance that asked for it.
+    The guard is not the timer's cancellation alone: a timer due in the same turn as the disposal
+    lands here first, and starting its work then would fail on the registration below and leave a
+    task nobody owns.
     """
     if scope.closed:
         return
@@ -101,8 +94,8 @@ def _report(loop: asyncio.AbstractEventLoop, effect: Disposable, error: BaseExce
     """Hand a timed effect's failure to the loop, which is where a call nobody awaits reports.
 
     The alternative is a task nobody retrieves, whose exception surfaces whenever it is collected — at
-    a time and a place that have nothing to do with the effect. Naming it is what makes the report say
-    which of a deployment's timers failed.
+    a time and a place that have nothing to do with the effect. Handing it over with the effect's
+    name is what makes the report say which of a deployment's timers failed.
     """
     loop.call_exception_handler({"message": f"a timed effect ({name_of(effect)}) failed", "exception": error})
 
@@ -112,8 +105,6 @@ def _report(loop: asyncio.AbstractEventLoop, effect: Disposable, error: BaseExce
 class EffectScope:
     _stack: list[Disposable] = field(default_factory=list)
     _dispose_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
-    #: Whether this scope is still taking effects. It only ever goes one way, and it goes that way
-    #: the moment disposal is *asked for* — see :meth:`dispose` for why the ask is the boundary.
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __len__(self) -> int:
@@ -121,16 +112,15 @@ class EffectScope:
 
     @property
     def closed(self) -> bool:
-        """Whether this scope has stopped taking effects: what a timer landing late has to ask."""
+        """Whether this scope has stopped taking effects."""
         return self._closed
 
     def effects(self) -> tuple[str, ...]:
         """The name of every effect this scope still holds, oldest first.
 
-        "Still holds" is the whole of the answer: a segment released by a :class:`Revoke` is gone
-        from it, an effect a cancellation left behind is still in it, and a scope that finished
-        recycling answers with nothing. That makes the mid-disposal reading useful in the one case it
-        matters — what a failure left undone.
+        A segment released by a :class:`Revoke` is gone from it, and an effect a cancellation left
+        behind is still in it. A timed effect stays in it after it fires — releasing it then does
+        nothing — so the view says what *may* still happen rather than what has.
         """
         return tuple(name_of(effect) for effect in self._stack)
 
@@ -169,22 +159,10 @@ class EffectScope:
     def after(self, delay: float, effect: Disposable) -> Revoke:
         """Register ``effect`` to run once, ``delay`` seconds from now, unless this scope goes first.
 
-        A timed effect is an ordinary registration: what goes on the stack is the timer's cancellation,
-        so the scope's own bookkeeping stays the whole story — ``revoke`` pre-empts it, :meth:`dispose`
-        cancels it along with everything else, and a scope that is already closed refuses it. That is
-        what a session expiry or a timeout needs, and what a bare ``loop.call_later`` leaves the caller
-        to remember.
-
-        It fires on the loop running now, which is the loop the scope's effects belong to, and nobody
-        is waiting for it when it does: a failure has no caller to raise to, so it goes to the loop's
-        exception handler, named by :func:`name_of`. An awaitable effect is awaited on a task of its
-        own, which makes an ``async def`` expiry as ordinary as a plain function — and that task is
-        registered here like anything else, so the scope cancels it on the way out rather than leaving
-        work behind that outlived the instance. A scope that closed before the timer landed runs
-        nothing at all.
-
-        The registration stays in :meth:`effects` after it fires — the scope still holds it, and
-        releasing it then is a no-op — so the view says what *may* still happen rather than what has.
+        It fires on the loop running now, and nobody is waiting for it when it does: a failure has no
+        caller to raise to, so it goes to the loop's exception handler, named by :func:`name_of`. An
+        awaitable effect is awaited on a task this scope owns, which makes an ``async def`` expiry as
+        ordinary as a plain function and gets it cancelled with the rest.
         """
         loop = asyncio.get_running_loop()
         timer: asyncio.TimerHandle | None = None
@@ -205,8 +183,7 @@ class EffectScope:
 
         Sealing belongs to *asking* for disposal rather than to finishing it, which is what gives a
         cancelled disposal a retry: the effects it left behind are still recycled by the next call,
-        and the scope has been closed to registration since the first one. An epoch on its way out
-        stops collecting effects, so a retry has the whole of the leftover work in view.
+        and an epoch on its way out has stopped collecting more.
         """
         self._closed = True
         if self._dispose_task is not None:
@@ -230,8 +207,6 @@ class EffectScope:
         A new epoch starts a new scope, so anything still holding the old one keeps reading the truth
         about it: closed, and drained. A cleared scope would let that holder collect into another
         epoch's bookkeeping and release an effect twice.
-
-        This is the whole of what reloading does to an instance's effects.
         """
         await self.dispose()
         return EffectScope()
