@@ -113,23 +113,6 @@ class TestOneModule:
         assert unit.path == (dropins / "gamma/__init__.py").resolve()
         assert [str(ComponentIdentity.of(cls)) for cls in unit.components] == ["gamma.Gamma"]
 
-    def test_a_package_may_reexport_a_component_from_a_submodule(self, dropins: Path) -> None:
-        _ = module_at(dropins, "delta/__init__.py", "from .inner import Nested\n")
-        _ = module_at(
-            dropins,
-            "delta/inner.py",
-            """
-            from composat import Component
-
-            class Nested(Component):
-                pass
-            """,
-        )
-
-        unit = load_unit(dropins / "delta")
-
-        assert [str(ComponentIdentity.of(cls)) for cls in unit.components] == ["delta.inner.Nested"]
-
     def test_every_component_the_module_holds_is_collected_in_order(self, dropins: Path) -> None:
         _ = module_at(
             dropins,

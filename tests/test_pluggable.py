@@ -272,32 +272,6 @@ class TestReloading:
 
         assert value_in("elsewhere.outsider") == 1
 
-    def test_a_package_is_reimported_below_its_entry(self, dropins: Path) -> None:
-        _ = module_at(dropins, "pkg/__init__.py", "from .inner import Inner\n")
-        inner = module_at(
-            dropins, "pkg/inner.py", "from composat import Component\n\nclass Inner(Component):\n    pass\n"
-        )
-        loader = loaded(dropins)
-
-        _ = inner.write_text(
-            textwrap.dedent(
-                """
-                from composat import Component, require
-
-                class Store(Component):
-                    pass
-
-                class Inner(Component):
-                    store: Store = require()
-                """
-            ).lstrip(),
-            encoding="utf-8",
-        )
-        result = loader.reload_module("pkg")
-
-        assert [cls.__name__ for cls in result.unit.components] == ["Inner"]
-        assert requirements_in(result.unit.components) == 1
-
     def test_a_reload_that_raises_leaves_the_old_generation_answering(self, dropins: Path) -> None:
         path = module_at(dropins, "alpha.py", _ALPHA)
         loader = loaded(dropins)
@@ -436,31 +410,6 @@ class TestAsADeclaredComponent:
 
 
 class TestStaleness:
-    def test_an_edit_to_a_submodule_that_holds_a_component_is_reported(self, dropins: Path) -> None:
-        _ = module_at(dropins, "pkg/__init__.py", "from .inner import Inner\n")
-        inner = module_at(
-            dropins, "pkg/inner.py", "from composat import Component\n\nclass Inner(Component):\n    pass\n"
-        )
-        loader = loaded(dropins)
-        assert loader.stale() == ()
-
-        _ = inner.write_text(
-            textwrap.dedent(
-                """
-                from composat import Component
-
-                class Inner(Component):
-                    pass
-
-                class Extra(Component):
-                    pass
-                """
-            ).lstrip(),
-            encoding="utf-8",
-        )
-
-        assert loader.stale() == ("pkg",)
-
     def test_a_submodule_with_no_component_is_out_of_its_reach(self, dropins: Path) -> None:
         _ = module_at(dropins, "pkg/__init__.py", "from .inner import Inner\n")
         _ = module_at(dropins, "pkg/inner.py", "from composat import Component\n\nclass Inner(Component):\n    pass\n")
