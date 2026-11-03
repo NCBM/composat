@@ -8,7 +8,7 @@ from typing import final
 
 import pytest
 
-from examples.http.app import Application, Message, Scope, Session, Tally, build, key_of
+from examples.http.app import Application, Message, Renderer, Scope, Session, Tally, build, key_of
 from examples.support import run
 
 
@@ -118,9 +118,8 @@ def test_the_call_outlives_the_body_it_is_writing() -> None:
 
         assert [message["type"] for message in sent] == ["lifespan.startup.complete", "lifespan.shutdown.complete"]
         assert app.assembly.keys() == ()
-        for _ in range(3):  # the cancellation lands on a tick of its own
-            await asyncio.sleep(0)
-        # Stopping the deployment cut the flush off, and what the request read is what it was holding.
+        # Stopping the deployment cut the flush off and waited for the cut: no grace is the default,
+        # and what the request read is what it was holding.
         assert kept[0].flushed == 0
         assert kept[0].swept == 2
 
@@ -267,6 +266,32 @@ def test_a_client_that_leaves_mid_body_keeps_writing_into_what_nobody_holds() ->
             assert tally.written == 3
 
         _ = await serve(app, during)
+
+    run(main())
+
+
+def test_a_write_that_finishes_within_the_grace_is_kept() -> None:
+    async def main() -> None:
+        app = build()
+        kept: list[Tally] = []
+
+        async def during() -> None:
+            tally = app.tally()
+            kept.append(tally)
+            renderer = app.renderer("acme")
+            assert isinstance(renderer, Renderer)
+            renderer.grace = 1.0  # this deployment finishes what it started
+            conversation = await post(app, "/acme", client="s1", body=b"hello world")
+
+            assert conversation.bodies() == [b"acme:1/1:hello\n", b"acme:2/2:world\n", b""]
+            # The response went out first: the write is still on its way while the body is done.
+            assert tally.flushed == 0
+
+        _ = await serve(app, during)
+
+        # Unloading waited for it, so the rows landed instead of being given up.
+        assert kept[0].flushed == 2
+        assert kept[0].swept == 0
 
     run(main())
 

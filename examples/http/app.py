@@ -41,6 +41,7 @@ from composat import (
     require,
 )
 from composat.context import open_call
+from composat.std.drain import InFlight
 from composat.std.root import answering_from_the_root
 
 type Message = MutableMapping[str, object]
@@ -132,6 +133,16 @@ class Renderer(Component):
     tally: Tally = require()
 
     delay: float = 0.05
+    """How long the write behind a response takes: where the store itself would be talked to."""
+
+    grace: float = 0.0
+    """How long unloading waits for the writes in flight before cutting them off."""
+
+    pending: InFlight
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending = InFlight(self.effect_scope)
 
     def tenant(self) -> str:
         """Whose instance this is, read off the address it answers at."""
@@ -166,11 +177,19 @@ class Renderer(Component):
         """Write the rows down where the next request will find them, off this request's path.
 
         The job belongs to the *instance*, not to the call: the response is long gone by the time it
-        finishes, so registering it on the call would cancel it at the end of the body. ``effect_scope``
-        is the lifetime that matches — cancelling the task is what unloading the instance does to it.
+        finishes, so registering it on the call would cancel it at the end of the body. The instance's
+        own work is where it goes — and what unloading does with it is the deployment's answer, below.
         """
-        task = asyncio.create_task(self._flush(rendering))
-        _ = self.effect_scope.put(task.cancel)
+        self.pending.add(self._flush(rendering))
+
+    @override
+    async def unload(self) -> None:
+        """Let the writes that are nearly done finish, and cut off the rest before going away.
+
+        Either way none of them is running when this returns: ``flushed`` counts the ones that made
+        it, and ``swept`` the ones this deployment decided not to wait for.
+        """
+        _ = await self.pending.drain(self.grace)
 
     async def _flush(self, rendering: Rendering) -> None:
         try:
