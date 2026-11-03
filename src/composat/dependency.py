@@ -13,9 +13,9 @@ Three invariants hold whatever order the caller works in:
   registry that declares them;
 - **in-use nodes survive** — `remove()` refuses a node that something still depends on.
 
-Unknown keys raise `KeyError` (the membership semantics of a dict); a duplicate `add()` or `link()`
-raises `ValueError` (declaring the same thing twice is a caller bug, and quietly overwriting would
-hide a name collision).
+Unknown keys raise ``KeyError``, the membership semantics of a dict. A duplicate ``add()`` or
+``link()`` raises ``ValueError``: declaring the same thing twice is a caller bug, and quietly
+overwriting would hide a name collision.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ Node = TypeVar("Node", bound=Hashable, default=Hashable)
 
 
 class DependencyError(RuntimeError):
-    """The graph refused a change, because the invariants above are what it exists to carry."""
+    """The graph refused a change that would have broken one of its invariants."""
 
 
 class DependencyCycleError(DependencyError, Generic[Node]):
