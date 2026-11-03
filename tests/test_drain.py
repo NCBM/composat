@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Coroutine
 
+import pytest
+
 from composat import EffectScope
 from composat.std.drain import InFlight
 
@@ -72,6 +74,34 @@ class TestDraining:
             return len(flying)
 
         assert run(drive()) == 0
+
+    def test_a_drain_that_is_cut_off_leaves_the_rest_to_the_epoch(self) -> None:
+        ended: list[str] = []
+
+        async def work() -> None:
+            try:
+                await asyncio.sleep(10)
+            finally:
+                ended.append("over")
+
+        async def drive() -> None:
+            scope = EffectScope()
+            flying = InFlight(scope)
+            flying.add(work())
+            draining = asyncio.create_task(flying.drain(10.0))
+            await asyncio.sleep(0)  # the drain is waiting on the work now
+            _ = draining.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await draining
+            # Nothing waited for it, so the epoch is what ends it — the floor, and why the task is
+            # registered there as well.
+            await scope.dispose()
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        run(drive())
+
+        assert ended == ["over"]
 
     def test_the_epoch_cancels_work_nobody_drained(self) -> None:
         ended: list[str] = []
