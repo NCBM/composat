@@ -37,6 +37,7 @@ from .identity import ComponentIdentity as ComponentIdentity
 from .identity import ComponentKey as ComponentKey
 from .loader import LoadedUnit as LoadedUnit
 from .loader import Unit as Unit
+from .loader import components_of as components_of
 from .loader import fingerprint_of as fingerprint_of
 from .loader import load_unit as load_unit
 from .loader import load_units as load_units

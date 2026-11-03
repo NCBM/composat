@@ -20,6 +20,7 @@ import pytest
 from composat import (
     ComponentIdentity,
     LoadedUnit,
+    components_of,
     fingerprint_of,
     load_unit,
     load_units,
@@ -180,6 +181,22 @@ class TestOneModule:
         _ = module_at(dropins, "helpers.py", "def shout(text: str) -> str:\n    return text.upper()\n")
 
         assert load_unit(dropins / "helpers.py").components == ()
+
+    def test_a_modules_components_can_be_read_from_the_module_itself(self, dropins: Path) -> None:
+        _ = module_at(
+            dropins,
+            "alpha.py",
+            """
+            from composat import Component
+
+            class Alpha(Component):
+                pass
+            """,
+        )
+
+        unit = load_unit(dropins / "alpha.py")
+
+        assert components_of(sys.modules["alpha"]) == unit.components
 
 
 class TestLoadingTheSameModuleTwice:

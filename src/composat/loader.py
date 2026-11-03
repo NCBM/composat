@@ -170,7 +170,7 @@ def load_unit(path: Path) -> Unit:
     fingerprint = fingerprint_of(resolved)
     module = _execute(resolved, name, package=resolved.name == "__init__.py")
     setattr(module, STAMP, LoadedUnit(resolved, fingerprint))
-    return Unit(resolved, module, _components_of(module, name), fingerprint)
+    return Unit(resolved, module, components_of(module), fingerprint)
 
 
 def load_units(root: Path) -> tuple[Unit, ...]:
@@ -291,10 +291,10 @@ def _reuse(module: ModuleType, resolved: Path) -> Unit:
         raise ValueError(f"{resolved} wants the name {module.__name__}, which this loader did not load")
     if record.path != resolved:
         raise ValueError(f"{module.__name__} is loaded from {record.path}, and {resolved} derives the same name")
-    return Unit(record.path, module, _components_of(module, module.__name__), record.fingerprint)
+    return Unit(record.path, module, components_of(module), record.fingerprint)
 
 
-def _components_of(module: ModuleType, name: str) -> tuple[type[Component], ...]:
+def components_of(module: ModuleType) -> tuple[type[Component], ...]:
     """Every component class ``module`` holds under its entry namespace, in namespace order.
 
     "Exports" is meant literally: the classes are read out of the module namespace, so they are there
@@ -305,7 +305,12 @@ def _components_of(module: ModuleType, name: str) -> tuple[type[Component], ...]
     All of them are collected rather than one being chosen. A module may hold two components meant to
     be declared at two keys, and refusing that would be refusing a deployment shape the assembly
     already supports; a caller that wants exactly one says so where the manifest is written.
+
+    The module is the argument rather than the unit, because a module is what a caller has: a
+    generation that has been superseded is still a module object with classes in it, and asking it
+    what it holds is how a reload compares the two.
     """
+    name = module.__name__
     members: dict[str, object] = vars(module)
     found: list[type[Component]] = []
     for value in members.values():
