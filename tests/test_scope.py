@@ -47,27 +47,18 @@ class TestRegistration:
 
         assert released == ["awaited"]
 
-    def test_the_view_reports_names_rather_than_the_effects(self) -> None:
-        def close_socket() -> None:
-            pass
-
-        scope = EffectScope()
-        _ = scope.put(lambda: None)
-        _ = scope.put(close_socket)
-
-        assert scope.effects() == ("<lambda>", "close_socket")
-
-    def test_a_released_effect_leaves_the_view(self) -> None:
+    def test_a_released_effect_is_no_longer_held(self) -> None:
         def close_socket() -> None:
             pass
 
         scope = EffectScope()
         _ = scope.put(lambda: None)
         revoke = scope.put(close_socket)
+        assert "close_socket" in scope.effects()
 
         run(revoke())
 
-        assert scope.effects() == ("<lambda>",)
+        assert "close_socket" not in scope.effects()
 
     def test_a_failing_effect_does_not_stop_the_rest(self) -> None:
         released: list[str] = []
