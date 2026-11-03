@@ -48,6 +48,13 @@ that have nothing to do with each other go on running side by side. A second cal
 than queued (:class:`~composat.errors.KeyInTransitError`): a key has one writer, and the caller that
 still holds the intent is the one that can say which of the two it meant.
 
+**What is declared changes under a running assembly.** An application that admits a component when a
+connection arrives declares it then, and :meth:`Assembly.admit` is that declaration together with the
+batch that brings it up; :meth:`Assembly.evict` is the pair of taking it down and withdrawing it.
+"Declared" and "up" go on being two facts either side of that: a declaration that outlives its key is
+what a failed admission leaves, which :meth:`Assembly.start` retries and :meth:`Assembly.evict`
+clears.
+
 The rule is a function of the table rather than a method of the thing that fills it
 (:func:`default_rule`), and that is a reading rather than a style. A requirement is answered from
 whatever is up *now*, so the rule has to see the table as it fills; taking the table as its argument
@@ -262,7 +269,8 @@ class Assembly:
     against the reverse, and both report what happened rather than raising — except for what is wrong
     with the call itself, which is refused before the first instance exists. :meth:`migrate` moves the
     keys already in it between the levels an instance rests at, and :meth:`enable` and :meth:`quiesce`
-    are the two of those a deployment names.
+    are the two of those a deployment names. :meth:`replace` puts a new generation behind a key, and
+    :meth:`admit` and :meth:`evict` are what changes the declarations the table is filled from.
 
     Which instance answers a requirement is not decided here but in the rule this assembly was handed,
     and that rule reads this same table: an instance that came up a moment ago is what the next field
@@ -460,6 +468,60 @@ class Assembly:
         """
         return await self.migrate(*keys, to=ComponentState.LOADED)
 
+    async def admit(self, *declarations: Declaration, enable: bool = True) -> AssemblyResult:
+        """Declare what has just arrived and bring it up: one connection, admitted once.
+
+        What it saves a caller from is a declaration and a batch that can come apart —
+        :meth:`~composat.registry.ComponentRegistry.declare_all` followed by :meth:`start` leaves a
+        declaration behind whenever the batch fails, and nothing would remember to withdraw it. What
+        ``enable`` means is :meth:`start`'s.
+
+        Several declarations arrive at once because their edges may only be acyclic together, and the
+        batch is checked as a set before any of it is committed. A key already declared is refused;
+        a key another call is moving is refused before the registry is touched at all, and one that
+        is already spoken for by the time the batch is closed over leaves the declarations standing —
+        as a component that failed to come up does.
+
+        A key that did not come up is reported rather than raised, and it stays declared: what clears
+        it is :meth:`evict`, and what retries it is :meth:`start`. So a caller that admitted something
+        the network then dropped still has one call to make, in each direction.
+        """
+        keys = tuple(declaration.key for declaration in declarations)
+        self._require_idle(keys)
+        _ = self._registry.declare_all(declarations)
+        return await self.start(*keys, enable=enable)
+
+    async def evict(self, *keys: ComponentKey) -> AssemblyResult:
+        """Take ``keys`` down and withdraw what declares them: the other end of :meth:`admit`.
+
+        The report is :meth:`stop`'s, and so is the teardown: a hook that refused to let go is
+        reported and the instance is down regardless. The withdrawal follows, because a key still up
+        under a declaration that is gone would answer requirements nothing orders anything by.
+
+        The batch is checked whole before any of it moves — every key declared, none named twice, and
+        none of them still needed by a declaration that stays put (``DependencyInUseError`` names
+        who) — so a batch that would be refused halfway through has taken nothing down.
+
+        A key that was declared and never came up is withdrawn with no teardown in between, which is
+        what makes a failed :meth:`admit` cleanable; a key nothing declared is a fact about the call,
+        and is refused before anything is.
+        """
+        seen: set[ComponentKey] = set()
+        for key in keys:
+            if key in seen:
+                raise ValueError(f"key is listed twice in one batch: {key}")
+            seen.add(key)
+            if key not in self._registry:
+                raise KeyError(key)
+        self._registry.require_undeclarable(*keys)
+        self._claim(keys, "being taken down")
+        try:
+            result = await self._take_down_each(keys)
+            self._registry.undeclare(*keys)
+            return result
+        finally:
+            self._release(keys)
+
     async def replace(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
         """Put a new instance behind ``key``, without a gap in what the key answers.
 
@@ -502,8 +564,8 @@ class Assembly:
         instead of a gap, and a handler that only wants the current answer asks the table
         (``instance(key) is event.instance``).
 
-        The key is spoken for from before the registry is touched until the swap is done, so a stop
-        or a batch that named it waits its turn rather than finding it half replaced.
+        The key is spoken for from before the registry is touched until the swap is done, so a stop or
+        a batch that named it is refused rather than finding it half replaced.
         """
         if key not in self._up:
             raise ValueError(f"nothing is up under {key}")
@@ -514,48 +576,6 @@ class Assembly:
             return await self._swap(key, declaration)
         finally:
             self._release((key,))
-
-    async def _swap(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
-        """The swap itself, the key already spoken for: declaration, generation, publication."""
-        superseded = self._registry.declaration(key)
-        self._registry.redeclare(declaration)
-        old = self._up[key]
-        publish = _level_of(old.state.state)
-        instance = declaration.build()
-        attach(instance, key, self._rule)
-        self._watch(key, instance)
-        failed: dict[ComponentKey, BaseException] = {}
-        published: BaseException | None = None
-        watched: list[tuple[Event, BaseException]] = []
-        with self._staging() as staged:
-            try:
-                try:
-                    await self._manager.migrate(instance, ComponentState.LOADED)
-                except (asyncio.CancelledError, Exception):
-                    # Nothing has been published and the key has not moved: put the declaration back
-                    # and take the generation that never happened down again.
-                    self._registry.redeclare(superseded)
-                    _ = await self._shutdown(instance)
-                    raise
-                self._up[key] = instance
-                failed = await self._notify(key.identity, excluding=key)
-                error = await self._shutdown(old)
-                if error is not None:
-                    failed[key] = error
-                if publish is ComponentState.ENABLED:
-                    try:
-                        await self._manager.migrate(instance, ComponentState.ENABLED)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as refusal:  # noqa: BLE001 - reported, not raised
-                        # The key answers this generation either way: what the refusal leaves is the
-                        # level it rests at, which is a fact about the swap rather than about it.
-                        published = refusal
-            finally:
-                watched.extend(self._deliver(staged))
-        if not failed and published is None and not watched:
-            return instance
-        return Replacement(instance, failed, published, tuple(watched))
 
     def _require_idle(self, keys: Iterable[ComponentKey]) -> None:
         """Refuse a batch that names a key another call is already moving; claim nothing.
@@ -842,6 +862,48 @@ class Assembly:
                 finally:
                     watched.extend(self._deliver(staged))
         return AssemblyResult(tuple(completed), failed, tuple(watched))
+
+    async def _swap(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
+        """The swap itself, the key already spoken for: declaration, generation, publication."""
+        superseded = self._registry.declaration(key)
+        self._registry.redeclare(declaration)
+        old = self._up[key]
+        publish = _level_of(old.state.state)
+        instance = declaration.build()
+        attach(instance, key, self._rule)
+        self._watch(key, instance)
+        failed: dict[ComponentKey, BaseException] = {}
+        published: BaseException | None = None
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            try:
+                try:
+                    await self._manager.migrate(instance, ComponentState.LOADED)
+                except (asyncio.CancelledError, Exception):
+                    # Nothing has been published and the key has not moved: put the declaration back
+                    # and take the generation that never happened down again.
+                    self._registry.redeclare(superseded)
+                    _ = await self._shutdown(instance)
+                    raise
+                self._up[key] = instance
+                failed = await self._notify(key.identity, excluding=key)
+                error = await self._shutdown(old)
+                if error is not None:
+                    failed[key] = error
+                if publish is ComponentState.ENABLED:
+                    try:
+                        await self._manager.migrate(instance, ComponentState.ENABLED)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as refusal:  # noqa: BLE001 - reported, not raised
+                        # The key answers this generation either way: what the refusal leaves is the
+                        # level it rests at, which is a fact about the swap rather than about it.
+                        published = refusal
+            finally:
+                watched.extend(self._deliver(staged))
+        if not failed and published is None and not watched:
+            return instance
+        return Replacement(instance, failed, published, tuple(watched))
 
     async def _bring_up(self, key: ComponentKey, *, enable: bool) -> None:
         """Build one instance, point its requirements at ``key``, and drive it to the level asked for.

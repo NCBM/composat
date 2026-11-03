@@ -24,6 +24,7 @@ from composat import (
     ComponentRegistry,
     ComponentState,
     Declaration,
+    DependencyInUseError,
     EffectScope,
     Event,
     KeyInTransitError,
@@ -232,6 +233,12 @@ class WeatherService(Protocol):
 class Weather(Component):
     def forecast(self, city: str) -> str:
         return city
+
+
+class Forecast(Component):
+    """Asks for the interface: the annotation names nothing until something is bound to it."""
+
+    weather: WeatherService = require()
 
 
 class RefusingScope:
@@ -603,6 +610,106 @@ class TestGoingDown:
         assert not result.ok
         assert isinstance(result.failed[at(Sticky)], RuntimeError)
         assert assembly.keys() == ()
+
+
+class TestArrivingAndLeaving:
+    def test_an_admitted_key_is_declared_and_serving(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+        key = at(Store, "connection-1")
+
+        result = run(assembly.admit(Declaration(Store, instance="connection-1")))
+
+        assert result.completed == (key,)
+        assert key in registry
+        assert state_of(assembly, key) is ComponentState.ENABLED
+
+    def test_an_admitted_key_brings_up_what_it_needs_at_its_own_qualifier(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store, instance="connection-1")))
+
+        result = run(assembly.admit(Declaration(Engine, instance="connection-1")))
+
+        assert result.completed == (at(Store, "connection-1"), at(Engine, "connection-1"))
+
+    def test_an_admission_that_will_not_come_up_stays_declared(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+
+        result = run(assembly.admit(Declaration(Wobbly)))
+
+        assert not result.ok
+        assert at(Wobbly) in registry
+        assert assembly.instance(at(Wobbly)) is None
+
+    def test_an_admission_with_an_unbound_requirement_leaves_the_registry_as_it_was(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+
+        with pytest.raises(UnboundServiceError):
+            _ = run(assembly.admit(Declaration(Forecast)))
+
+        assert registry.declarations() == ()
+        assert assembly.keys() == ()
+
+    def test_a_key_that_is_already_declared_is_refused(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        with pytest.raises(ValueError, match="already declared"):
+            _ = run(assembly.admit(Declaration(Store)))
+
+    def test_evicting_takes_the_key_down_and_withdraws_what_declared_it(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+        key = at(Store, "connection-1")
+        _ = run(assembly.admit(Declaration(Store, instance="connection-1")))
+
+        result = run(assembly.evict(key))
+
+        assert result.completed == (key,)
+        assert assembly.keys() == ()
+        assert key not in registry
+        with pytest.raises(KeyError):
+            _ = run(assembly.start(key))
+
+    def test_a_key_that_never_came_up_is_withdrawn_without_a_teardown(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+        _ = run(assembly.admit(Declaration(Wobbly)))
+
+        result = run(assembly.evict(at(Wobbly)))
+
+        assert result.ok
+        assert at(Wobbly) not in registry
+
+    def test_withdrawing_what_something_still_declared_needs_takes_nothing_down(self) -> None:
+        registry = declaring(Declaration(Store), Declaration(Engine))
+        assembly = Assembly(registry)
+        _ = run(assembly.start(at(Engine)))
+
+        with pytest.raises(DependencyInUseError):
+            _ = run(assembly.evict(at(Store)))
+
+        assert assembly.keys() == (at(Store), at(Engine))
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+        assert at(Store) in registry
+
+    def test_evicting_a_key_nothing_declared_is_refused(self) -> None:
+        assembly = Assembly(ComponentRegistry())
+
+        with pytest.raises(KeyError):
+            _ = run(assembly.evict(at(Store)))
+
+    def test_a_key_that_left_can_arrive_again(self) -> None:
+        registry = ComponentRegistry()
+        assembly = Assembly(registry)
+        key = at(Store, "connection-1")
+
+        _ = run(assembly.admit(Declaration(Store, instance="connection-1")))
+        _ = run(assembly.evict(key))
+        result = run(assembly.admit(Declaration(Store, instance="connection-1")))
+
+        assert result.completed == (key,)
+        assert state_of(assembly, key) is ComponentState.ENABLED
 
 
 class TestReLevelling:
