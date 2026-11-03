@@ -9,8 +9,8 @@ for, bound where the work runs, so that anything underneath resolves from where 
 independent of each other and a task started inside one inherits it. That inheritance cuts both ways:
 ordinary application code underneath a component takes part in the same call, and a task that outlives
 the call is left holding a scope that has already closed. *The caller guarantees its sub-tasks are
-finished.* There is no task registry to move that obligation into yet, and a scope is closed the
-moment its release is asked for, so nothing that strays afterwards can collect into it.
+finished*: a scope is closed the moment its release is asked for, so nothing that strays afterwards can
+collect into it.
 
 **What the call asked for, it asks once.** A resolve is remembered on the call, so the rule builds a
 per-request object once however many layers ask for it, and the release it registered happens once.
