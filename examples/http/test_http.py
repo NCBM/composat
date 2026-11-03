@@ -8,7 +8,7 @@ from typing import final
 
 import pytest
 
-from examples.http.app import Application, Message, Scope, Tally, build
+from examples.http.app import Application, Message, Scope, Session, Tally, build, key_of
 from examples.support import run
 
 
@@ -184,6 +184,74 @@ def test_a_session_lives_across_requests_until_it_is_gone() -> None:
             idle = await post(app, "/acme", client="s2", body=b"e")
             assert idle.bodies() == [b"acme:1/1:e\n", b""]
             assert tally.written == 5
+
+        _ = await serve(app, during)
+
+    run(main())
+
+
+def test_two_requests_from_one_client_count_into_one_session() -> None:
+    async def main() -> None:
+        app = build()
+
+        async def during() -> None:
+            tally = app.tally()
+            # Admitted first, because two requests arriving for a client nobody has admitted both ask
+            # to admit it, and the assembly refuses the second rather than queueing it: ordering two
+            # callers is the application's, so this one does it before either arrives.
+            _ = await app.session("s1")
+            left, right = await asyncio.gather(
+                post(app, "/acme", client="s1", body=b"one"),
+                post(app, "/acme", client="s1", body=b"two"),
+            )
+
+            # One session answers both, so the rows are counted between them — in whichever order the
+            # loop let the two write.
+            assert sorted([left.bodies()[0], right.bodies()[0]]) == [b"acme:1/1:one\n", b"acme:1/2:two\n"]
+            session = app.assembly.instance(key_of(Session, "s1"))
+            assert isinstance(session, Session)
+            assert sorted(session.rows) == ["one", "two"]
+            assert tally.written == 2
+            assert tally.let_go == 2
+
+        _ = await serve(app, during)
+
+    run(main())
+
+
+def test_a_client_that_leaves_mid_body_keeps_writing_into_what_nobody_holds() -> None:
+    async def main() -> None:
+        app = build()
+
+        async def during() -> None:
+            tally = app.tally()
+            sent: list[Message] = []
+            said_bye: list[Conversation] = []
+
+            async def receive() -> Message:
+                return {"type": "http.request", "body": b"one two", "more_body": False}
+
+            async def send(message: Message) -> None:
+                sent.append(message)
+                if len(sent) == 2:  # the first piece of the body: the client goes, in another request
+                    said_bye.append(await post(app, "/acme/bye", client="s1"))
+
+            scope: Scope = {"type": "http", "method": "POST", "path": "/acme", "headers": [(b"x-session", b"s1")]}
+            await app(scope, receive, send)
+
+            assert [bye.status for bye in said_bye] == [204]
+            # The response still finished, on the rendering the call owns and the counts it kept.
+            assert [_bytes_of(message["body"]) for message in sent if message["type"] == "http.response.body"] == [
+                b"acme:1/1:one\n",
+                b"acme:2/2:two\n",
+                b"",
+            ]
+            # Withdrawing a key does not wait for a reader, and a read does not reserve the key: the
+            # second word went into a session nothing holds any more, and nobody is told it is gone.
+            assert app.assembly.instance(key_of(Session, "s1")) is None
+            after = await post(app, "/acme", client="s1", body=b"three")
+            assert after.bodies() == [b"acme:1/1:three\n", b""]
+            assert tally.written == 3
 
         _ = await serve(app, during)
 
