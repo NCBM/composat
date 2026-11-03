@@ -27,6 +27,12 @@ passed over rather than started a second time. ``stop`` is deliberately not the 
 takes down the keys it was given and nothing else, because a dependency may be serving keys the
 caller did not name.
 
+**A level is moved, not rebuilt.** ``start(..., enable=False)`` leaves a batch built and not serving,
+and :meth:`Assembly.migrate` is what takes it the rest of the way: the same table, the same report,
+and the direction of the move deciding the order. That batch does not close over what its keys
+require, unlike ``start`` — a provider left serving under a dependant that was put back into service
+is the caller's instruction rather than an oversight here, which is the reading ``stop`` takes too.
+
 **A batch is admitted before anything is built.** A key nothing declares, a key listed twice, a key
 already up: all three are refused as exceptions, because they are facts about the call rather than a
 component failing on its own, and half a batch already up with nothing to report it would be the
@@ -63,7 +69,7 @@ from .manager import ComponentManager
 from .registry import ComponentRegistry, Declaration
 from .scope import Reclaimable
 from .spec import RequirementSpec
-from .state import Committed, ComponentState, Operation, Unsubscribe
+from .state import HELD, Committed, ComponentState, Operation, Unsubscribe
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +226,9 @@ class Assembly:
     One instance per key: an identity may have several (a tenant each), and each answers at its own
     qualifier. :meth:`start` fills the table against the registry's order and :meth:`stop` empties it
     against the reverse, and both report what happened rather than raising — except for what is wrong
-    with the call itself, which is refused before the first instance exists.
+    with the call itself, which is refused before the first instance exists. :meth:`migrate` moves the
+    keys already in it between the levels an instance rests at, and :meth:`enable` and :meth:`quiesce`
+    are the two of those a deployment names.
 
     Which instance answers a requirement is not decided here but in the rule this assembly was handed,
     and that rule reads this same table: an instance that came up a moment ago is what the next field
@@ -381,6 +389,73 @@ class Assembly:
                 else:
                     failed[key] = error
         return AssemblyResult(tuple(completed), failed, tuple(watched))
+
+    async def migrate(self, *keys: ComponentKey, to: ComponentState) -> AssemblyResult:
+        """Move ``keys`` to the level ``to`` and report what each of them did.
+
+        ``to`` is a level an instance rests at while this assembly holds it (:data:`~composat.state.HELD`),
+        never ``UNLOADED``: that one is :meth:`stop`, which also takes the key out of the table, and a
+        key left there with an unloaded instance would answer a requirement with something that is not
+        serving.
+
+        What the batch does not do is decide which keys it should have been given. Naming a key is
+        naming where that thing sits, so a provider left serving under a dependant that was put back
+        into service is the caller's instruction rather than an oversight here — the same reading
+        :meth:`stop` takes of a dependency it was not told about.
+
+        The direction decides the order, because the order is what makes the level reachable: a batch
+        coming up is walked requirements first, so a provider is serving before the dependant that
+        reads it is asked to be, and a batch going down the other way, so whatever would hand a
+        provider new work stops first. ``DRAINING`` counts as going down — a batch told to finish what
+        it accepted is a batch being taken out of service.
+
+        A key already at ``to`` is carried through without a move: the call is about the level the
+        batch should be at, and a key already there is that postcondition holding. That is also why a
+        batch here has no ``strict``, unlike :meth:`start` — a key that could not be moved rests at
+        some true level of its own, and it is reported and left there while the rest are still moved.
+
+        Events arrive per key, as each one finishes moving, so a re-level is visible in a running
+        ledger with no second mechanism.
+        """
+        if to not in HELD:
+            raise ValueError(f"{to.name} is not a level a held instance is at: that is stop()")
+        batch = _in_order(self._require_held(keys), self._order_for(to))
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            for key in batch:
+                try:
+                    await self._manager.migrate(self._up[key], to)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - a key that would not move is reported, not raised
+                    # A key that would not move is at some true level of its own, and the rest of
+                    # the batch is still the caller's instruction.
+                    failed[key] = error
+                else:
+                    completed.append(key)
+                finally:
+                    watched.extend(self._deliver(staged))
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
+
+    async def enable(self, *keys: ComponentKey) -> AssemblyResult:
+        """Put ``keys`` into service: the batch ``migrate(*keys, to=ComponentState.ENABLED)`` names.
+
+        Worth a name because it is the second half of ``start(..., enable=False)``: a deployment that
+        builds a tenant before it serves it says so at two call sites, and the one that finishes the
+        job should read as the level it means rather than as a state name.
+        """
+        return await self.migrate(*keys, to=ComponentState.ENABLED)
+
+    async def quiesce(self, *keys: ComponentKey) -> AssemblyResult:
+        """Take ``keys`` out of service and leave them built: ``to=ComponentState.LOADED``.
+
+        The multi-tenant verb. What it keeps is what :meth:`stop` gives up — the instance, its caches,
+        its pools, whatever its ``load`` registered — so putting the tenant back is an :meth:`enable`
+        rather than a build.
+        """
+        return await self.migrate(*keys, to=ComponentState.LOADED)
 
     async def replace(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
         """Put a new instance behind ``key``, without a gap in what the key answers.
@@ -590,6 +665,28 @@ class Assembly:
                 raise ValueError(f"already up: {key}")
             seen.add(key)
         return keys
+
+    def _require_held(self, keys: tuple[ComponentKey, ...]) -> tuple[ComponentKey, ...]:
+        """The keys of ``keys`` this assembly is holding, refusing one that is named twice.
+
+        A key that is not up is passed over rather than raised on, which is :meth:`stop`'s reading of
+        the same fact: a deployment says "these keys should be at this level", and a tenant torn down
+        between the read and the call would otherwise make every caller guard its own batch. A key
+        named twice is still a fact about the call, and is refused before the first move.
+        """
+        held: list[ComponentKey] = []
+        seen: set[ComponentKey] = set()
+        for key in keys:
+            if key in seen:
+                raise ValueError(f"key is listed twice in one batch: {key}")
+            seen.add(key)
+            if key in self._up:
+                held.append(key)
+        return tuple(held)
+
+    def _order_for(self, to: ComponentState) -> tuple[ComponentIdentity, ...]:
+        """The order a batch is walked in to arrive at ``to``: requirements first when coming up."""
+        return self._registry.order() if to is ComponentState.ENABLED else self._registry.reverse_order()
 
     async def _bring_up(self, key: ComponentKey, *, enable: bool) -> None:
         """Build one instance, point its requirements at ``key``, and drive it to the level asked for.

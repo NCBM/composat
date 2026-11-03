@@ -120,6 +120,13 @@ class Steady(Component):
     """A leaf whose replacement generation is the one that will not come up."""
 
 
+class Bashful(Component):
+    """A component that will not be put into service."""
+
+    async def enable(self) -> None:
+        raise RuntimeError("enable refused")
+
+
 async def refusing_load(self: Component) -> None:
     """A lifecycle hook that refuses, for a generation written up as a class dict."""
     raise RuntimeError("load refused")
@@ -444,6 +451,98 @@ class TestGoingDown:
         assert not result.ok
         assert isinstance(result.failed[at(Sticky)], RuntimeError)
         assert assembly.keys() == ()
+
+
+class TestReLevelling:
+    def test_a_batch_built_first_is_put_into_service_later(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        built = run(assembly.start(at(Engine), enable=False))
+        assert built.completed == (at(Store), at(Engine))
+
+        result = run(assembly.enable(*built.completed))
+
+        assert result.completed == (at(Store), at(Engine))
+        assert state_of(assembly, at(Engine)) is ComponentState.ENABLED
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+
+    def test_quiescing_keeps_the_instance_it_was_holding(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        held = assembly.instance(at(Store))
+
+        _ = run(assembly.quiesce(at(Store)))
+
+        assert assembly.instance(at(Store)) is held
+        assert assembly.keys() == (at(Store),)
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+    def test_a_batch_coming_up_is_walked_requirements_first(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Engine), enable=False))
+        seen = watching(assembly)
+
+        _ = run(assembly.enable(at(Engine), at(Store)))
+
+        assert [event.key for event in seen] == [at(Store), at(Engine)], "the batch was named the other way round"
+        assert [event.operation for event in seen] == [Operation.enable, Operation.enable]
+
+    def test_a_batch_going_down_is_walked_dependants_first(self) -> None:
+        assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))
+        _ = run(assembly.start(at(Engine)))
+        seen = watching(assembly)
+
+        result = run(assembly.quiesce(*assembly.keys()))
+
+        assert result.completed == (at(Engine), at(Store))
+        assert [event.key for event in seen if event.operation is Operation.drain] == [at(Engine), at(Store)]
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+    def test_a_drained_key_is_settled_by_the_same_verb(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        _ = run(assembly.migrate(at(Store), to=ComponentState.DRAINING))
+        assert state_of(assembly, at(Store)) is ComponentState.DRAINING
+
+        _ = run(assembly.quiesce(at(Store)))
+        assert state_of(assembly, at(Store)) is ComponentState.LOADED
+
+    def test_a_key_already_at_the_level_is_carried_through(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+        seen = watching(assembly)
+
+        result = run(assembly.enable(at(Store)))
+
+        assert result.completed == (at(Store),)
+        assert seen == []
+
+    def test_a_key_that_is_not_up_is_passed_over(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+
+        result = run(assembly.enable(at(Store)))
+
+        assert result.ok
+        assert result.completed == ()
+
+    def test_unloading_is_not_a_level_a_batch_moves_to(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store)))
+
+        with pytest.raises(ValueError, match="not a level"):
+            _ = run(assembly.migrate(at(Store), to=ComponentState.UNLOADED))
+
+        assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+
+    def test_a_key_that_will_not_come_up_is_reported_and_the_rest_still_move(self) -> None:
+        assembly = Assembly(declaring(Declaration(Bashful), Declaration(Store)))
+        _ = run(assembly.start(at(Bashful), at(Store), enable=False))
+
+        result = run(assembly.enable(at(Store), at(Bashful)))
+
+        assert result.completed == (at(Store),)
+        assert isinstance(result.failed[at(Bashful)], RuntimeError)
+        assert state_of(assembly, at(Bashful)) is ComponentState.LOADED
 
 
 class TestFailures:

@@ -87,6 +87,14 @@ so its arrival is the state it started in. Nothing else about the machine distin
 verbs, which is why the pair of tables carries the asymmetry instead of a special case in a method.
 """
 
+HELD: frozenset[ComponentState] = frozenset({ComponentState.LOADED, ComponentState.DRAINING, ComponentState.ENABLED})
+"""The levels an instance rests at while an assembly holds it: what a batch may be moved to.
+
+``UNLOADED`` is not one of them. Being unloaded is not a level a held instance is at, and the verb
+that gets there takes the key out of the table as well — which is why the set a level may be asked
+for is smaller than the set the machine has.
+"""
+
 
 class ComponentStateError(RuntimeError):
     """A verb was driven from a state it does not leave.
