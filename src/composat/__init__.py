@@ -1,15 +1,15 @@
 """composat: a component lifespan interface.
 
-The rewrite is rebuilding the package layer by layer. What is here so far is the foundation the
-rest stands on — identities and keys, effect scopes, the call level that says whose work a read
-belongs to and where its effects end, the component base and what it declares, the
-state machine and the manager that drives it, the dependency graph, the registry of declarations,
-and the assembly: the table of what is up, the rule a requirement is answered by, the batch verbs
-that fill the table and empty it, the report they hand back, and the stream of moves they report
-while they run. On top of those sits the loader, which turns a path into the module there and the
-components it exports, and answers what that module's source looks like now. What turns a loaded
-module into a running generation is ``composat.std.pluggable``, the component that owns the decision;
-see ``archive/pre-rewrite`` for the design all of this is rebuilt from.
+An assembly brings instances up and takes them down in dependency order, and the modules here are the
+layers it stands on — identities and keys, effect scopes, the call level that says whose work a read
+belongs to and where its effects end, the component base and what it declares, the state machine and
+the manager that drives it, the dependency graph, the registry of declarations, and the assembly: the
+table of what is up, the rule a requirement is answered by, the batch verbs that fill the table and
+empty it, the report they hand back, and the stream of moves they report while they run.
+
+``composat.std`` adds what a deployment needs on top of that: the loader that turns a path into the
+module there and the components it exports, the component that owns moving a loaded module onto a new
+generation, the wait for a swap to land, and the drain of an instance's work.
 """
 
 from . import context as context
