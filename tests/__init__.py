@@ -1,1 +1,1 @@
-"""The suite for the rewrite: one module per layer, as each layer lands."""
+"""The suite: one module per layer, and the cases each layer promises to keep."""
