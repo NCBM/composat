@@ -229,6 +229,11 @@ class ComponentStateControl:
 
     __slots__ = ("_observers", "_pending", "_state", "lock")
 
+    #: The lock the moves on this instance are made under. One per instance, so two components move
+    #: side by side; spelled out here because an inferred type is one a reader has to check on the
+    #: assignment rather than on the class.
+    lock: asyncio.Lock
+
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self._pending = None
