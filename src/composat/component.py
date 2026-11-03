@@ -12,11 +12,10 @@ with no annotation, a private cache. A field is a requirement because the class 
 because of what its annotation looks like; the annotation says what the field reads as, which is how
 a checker keeps up with both halves.
 
-What the framework *does* to a component is here too, as functions rather than methods —
-:func:`requirements_of` and :func:`capabilities_of` on a type, :func:`attach`, :func:`read` and
-:func:`reopen_epoch` on an instance: an operation an application must not be able to replace is not
-offered to it as a member. ``@final`` on a method of the base answers the same question after the
-fact, refusing an extension the declaration had already invited.
+What the framework *does* to a component is a function in this module rather than a method on it:
+:func:`requirements_of` and :func:`capabilities_of` read a type, :func:`attach`, :func:`read` and
+:func:`reopen_epoch` act on an instance. An operation an application must not be able to replace is
+not offered to it as a member.
 """
 
 from __future__ import annotations
@@ -36,22 +35,18 @@ from .state import ComponentStateControl
 class RequirementResolver(Protocol):
     """How one requirement becomes an instance: the caller's rule, read off a key and a requirement.
 
-    The first argument is the *asker*'s own key, not a call's: a field is read from inside a hook,
-    outside the call level. The second is the whole requirement rather than just its service, so an
-    implementation that understands the requirement's ``extras`` acts on them — that is where a scope
-    strategy attaches — and one that ignores them resolves by key alone.
+    The key is the *asker*'s own, not a call's: a field is read from inside a hook, outside the call
+    level. The requirement is the whole record rather than just its service, so an implementation that
+    understands its ``extras`` acts on them, and one that ignores them resolves by key alone.
 
-    The third is the scope the resolution is made on behalf of, which lets a resolver hand back
+    ``effects`` is the scope the resolution is made on behalf of, which lets a resolver hand back
     something with a lifetime shorter than the assembly's: what it builds for this reader alone is
-    registered there and released when that scope closes. It is the innermost lifetime the read
-    happens inside (:func:`read` passes the call's scope when one is in force, the instance's epoch
-    otherwise), so "this answer lives as long as the request" is written in the resolver rather than
-    in a second read path. A resolver answering from the assembly's instances registers nothing and
-    passes it through, so one seam covers both kinds of answer.
+    registered there and released when that scope closes. A resolver answering from the assembly's
+    instances registers nothing and passes it through, so one seam covers both kinds of answer.
     """
 
     def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
-        """The instance answering ``requirement`` for ``key``, registered on ``effects`` if new."""
+        """The instance answering ``requirement`` for ``key``."""
         ...
 
 
@@ -60,10 +55,9 @@ class RequirementResolver(Protocol):
 class Binding:
     """Where one instance's requirements are read from: the key it answers at, and the rule it asks.
 
-    Written by :func:`attach` before ``load`` and read by :func:`read`, which is the whole of what the
-    attribute is for. It is a value rather than two attributes on the instance so that the pair cannot
-    be half-written, and public rather than private so that a hook can say which tenant it is serving
-    (``self.binding.key``) without the framework keeping a second copy somewhere.
+    Written by :func:`attach` before ``load``, read by :func:`read`. It is a value rather than two
+    attributes on the instance so that the pair cannot be half-written, and public so that a hook can
+    say which tenant it is serving without the framework keeping a second copy somewhere.
     """
 
     key: ComponentKey
@@ -74,8 +68,7 @@ LIFECYCLE_HOOKS = ("load", "unload", "reload", "enable", "disable", "drain")
 """The hooks the state machine drives, in the order they are reported.
 
 The base declares all six, which gives ``@override`` something to check against and makes driving an
-unwritten hook an ordinary no-op. Declaring one is the base's job; :func:`capabilities_of` decides
-what a type claims.
+unwritten hook an ordinary no-op.
 """
 
 
@@ -88,9 +81,9 @@ class _Bound:
     :meth:`settle` fills in the record once the class exists — and a marker nobody settled, set on a
     finished class rather than written in its body, is refused rather than read as a second answer.
 
-    Reading asks the instance it was read from, at that instance's key and on that instance's epoch,
-    so a replaced provider is visible to the reader with nothing refreshed. Off the class it answers
-    with the requirement itself, which is how a tool asks what a field declares.
+    Reading goes through :func:`read`, so a replaced provider is visible to the reader with nothing
+    refreshed. Off the class it answers with the requirement itself, which is how a tool asks what a
+    field declares.
 
     Assigning raises: the resolver owns the answer, and a stored copy would be a second answer that
     silently disagrees with the first.
@@ -141,17 +134,15 @@ class _Bound:
 def require[T](contract: type[T] | None = None) -> T:
     """Declare a field a requirement: the framework answers it, and reading the field is how.
 
-    ``store: Store = require()`` is the whole spelling. The annotation says what the field reads as,
-    which is what a checker needs; the marker says the framework is what answers it, which used to be
-    guessed from the annotation. Being an assignment in the class body, the field counts as
-    initialized to a checker, so a requirement no longer looks like an instance variable nothing
-    ever sets.
+    ``store: Store = require()`` is the whole spelling. Being an assignment in the class body, the
+    field counts as initialized to a checker, so a requirement does not look like an instance variable
+    nothing ever sets.
 
     ``contract`` is the optional half, for a checker that will not infer a return type from the
-    annotation the call is written under: ``store: Store = require(Store)`` reads the same and is
-    refused when the two disagree. Written without the annotation it is still a complete declaration,
-    and the field still reads as ``Store`` — what is lost is a checker's willingness to accept a
-    class attribute nobody annotated.
+    annotation the call is written under: ``store: Store = require(Store)`` reads the same, and the
+    two disagreeing is refused. Written without the annotation it is still a complete declaration, and
+    the field still reads as ``Store`` — what is lost is a checker's willingness to accept a class
+    attribute nobody annotated.
 
     The contract need not be in scope while the class is being made, because no annotation is read
     then either: a class defined further down the module, or imported only for typing, declares its
@@ -184,15 +175,9 @@ def _is_contract(annotation: object) -> type[object] | None:
 
     This is the check a *marked* field goes through, not what finds the marked fields: the class body
     said which fields are requirements, and this decides whether what each one is annotated with can
-    answer for it.
-
-    * a :class:`Component` subclass or a ``Protocol`` → a **contract**, and the registry draws an
-      edge for it;
-    * anything else — ``list[str]``, a plain resource type — **an ordinary value**, which a
-      requirement cannot ask for.
-
-    A ``Protocol`` with no provider bound to it is a contract that has no answer yet, and the
-    registry raises :class:`~composat.errors.UnboundServiceError` where it draws the edge.
+    answer for it. A :class:`Component` subclass or a ``Protocol`` is a contract, and the registry
+    draws an edge for it; anything else — ``list[str]``, a plain resource type — is an ordinary value,
+    which a requirement cannot ask for.
     """
     contract = _peeled(annotation)
     if not isinstance(contract, type):
@@ -240,17 +225,10 @@ def _unsettled(value: object) -> bool:
 class Component:
     """A component: business methods, plus the declarations the framework reads.
 
-    A component is a plain class. Its identity is the path it was written at — the module and the
-    qualified name there — which is what a reload keeps while replacing the class object. It declares
-    the six lifecycle hooks, and answers nothing for any hook until a type writes its own:
-    :func:`capabilities_of` reports the ones a type writes, and a component that writes none is one
-    nothing drives.
-
-    What the framework reads and does on a component are functions in this module, not members of it:
-    :func:`requirements_of` and :func:`capabilities_of` on a type, and :func:`attach`, :func:`read` and
-    :func:`reopen_epoch` on an instance. An operation an application must not be able to replace is not
-    offered to it as a method — its identity is read by :meth:`ComponentIdentity.of`, which is where a
-    class's own path is turned into one.
+    A component is a plain class, and its identity is the path it was written at — the module and the
+    qualified name there — which is what a reload keeps while replacing the class object. The class
+    declares the six lifecycle hooks, and answers nothing for any of them until a type writes its own:
+    a component that writes none is one nothing drives.
     """
 
     #: The requirements this type declares, once settled; ``None`` until then. The map is complete
@@ -285,8 +263,7 @@ class Component:
             cls._classify()
 
     def __init__(self) -> None:
-        # An instance is born inside an epoch rather than acquiring one on ``load``, which makes the
-        # two ends symmetric and a component that never loaded recycle an empty scope.
+        # An instance is born inside an epoch rather than acquiring one on ``load``.
         self.effect_scope = EffectScope()
         self.state = ComponentStateControl()
 
@@ -377,14 +354,12 @@ class Component:
         receiver's: re-read the field, drop a cached handle, or ask the application to replace this
         one too.
 
-        It carries the requirement rather than the new instance, which keeps this hook what it is
-        for: a receiver that wants the value reads the field, whose answer is already current, and one
-        that wants to know whether it moved compares what it kept.
-
-        Being told and being able to read are two facts, though. The swap moves the key to the new
-        generation before that generation starts serving, so a receiver driven in the middle of it
-        reads a provider that is built and not yet serving — a miss, and a receiver that has to act on
-        the new one now is what ``composat.std.wait.serving`` exists for.
+        It carries the requirement rather than the new instance, so a receiver that wants the value
+        reads the field, whose answer is already current, and one that wants to know whether it moved
+        compares what it kept. Being told and being able to read are two facts, though: the swap moves
+        the key to the new generation before that generation starts serving, so a receiver driven in
+        the middle of it reads a provider that is built and not yet serving — a miss, and a receiver
+        that has to act on the new one now is what ``composat.std.wait.serving`` exists for.
 
         It is a notification rather than a capability: it is driven for every dependant whether the
         type writes it or not, and the base's answer is to do nothing.
@@ -395,15 +370,11 @@ class Component:
 def requirements_of(component: type[Component]) -> tuple[RequirementSpec, ...]:
     """The requirements ``component`` declares, in declaration order, as plain records.
 
-    A reading of a type rather than a member of it, for the same reason :func:`attach` and
-    :func:`read` are: the framework's own readings are not an extension point. A class that could
-    answer differently would disagree with the descriptor the same declaration installed — the
-    registry draws its edges from this answer, and the field resolves through that descriptor — and
-    the two would part silently.
-
-    The map it reads is the class's own bookkeeping, reached from here on purpose: what an application
-    must not be able to answer for itself is a *method* on the class, and keeping the map private while
-    the reading lives here is exactly that split.
+    The registry draws its edges from this answer, and a field resolves through the descriptor the same
+    declaration installed: a class that could answer differently would disagree with the descriptor it
+    came with, and the two would part silently. The map it reads is the class's own bookkeeping,
+    reached from here on purpose — what a reader must not answer for itself stays private, and the
+    reading lives here.
     """
     settled = component._requirements_of()  # pyright: ignore[reportPrivateUsage]
     return tuple(settled.values())
@@ -417,9 +388,8 @@ def capabilities_of(component: type[Component]) -> tuple[str, ...]:
     inherited hook counts (a subclass of a disposable component is disposable) and an override counts
     once.
 
-    A misspelled hook counts as nothing, which is what the base's declarations buy: a checker answers
-    "there is no ``laod`` to override" at the typo, where a bare framework would report one capability
-    fewer and leave the cause far from the effect.
+    A misspelled hook counts as nothing, which is what the base's declarations buy: the checker answers
+    at the typo, instead of a capability quietly going missing with the cause far from the effect.
     """
     written: set[str] = set()
     for klass in component.__mro__:
@@ -432,9 +402,8 @@ def capabilities_of(component: type[Component]) -> tuple[str, ...]:
 def attach(component: Component, key: ComponentKey, resolver: RequirementResolver) -> None:
     """Point ``component``'s declared requirements at ``key``, resolved by ``resolver``.
 
-    The assembly that brings the instance up calls this before ``load`` and after the instance is
-    reachable, so a hook reading a requirement reads something already there. The address is kept as
-    ``component.binding``, so a hook that has to say which tenant it is serving can read it back.
+    Called before ``load`` and after the instance is reachable, so that a hook reading a requirement
+    reads something already there.
     """
 
     component.binding = Binding(key, resolver)
