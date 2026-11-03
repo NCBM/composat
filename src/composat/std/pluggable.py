@@ -8,9 +8,8 @@ made it, so it is an instance field of this component rather than a process-leve
 
 Three things the component deliberately does not do:
 
-* **it does not touch ``sys.path``.** A module is named by where it is relative to a root the
-  *application* put on the path, so making those modules importable is the deployment's job; a root no
-  ``sys.path`` entry holds is answered by name when the load fails, not repaired here.
+* **it does not touch ``sys.path``**, for the reason :mod:`composat.loader` does not: the path is the
+  application's to set, and this component reads it like everything else.
 * **it declares nothing.** A loaded module exports component classes; whether to declare them, at
   which qualifier, and whether to bring them up is the application's assembly. The two verbs here keep
   the halves apart — :meth:`UnitLoader.reload_module` moves *code*, and
@@ -472,11 +471,6 @@ class UnitLoader(Component):
         Every file that holds a component counts, not just the entry: an edit to ``pkg/inner.py`` is a
         real change to the code that runs, and a fingerprint taken of the file a class was read from is
         how it is noticed without a finder in the import path.
-
-        This is the judgement a reload needs and the only one: a fingerprint says the file moved, and it
-        says it in both of the cases a version cannot — an edit that landed with nothing else to show
-        for it. Whose business it is to *act* on it is the caller's, which is why this answers a list
-        rather than reloading anything.
 
         A file that is gone counts as stale rather than raising: a scan across a directory should report
         "this one moved on" instead of stopping at the first missing file. ``LoadedUnit.is_stale``
