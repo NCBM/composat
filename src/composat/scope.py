@@ -31,7 +31,7 @@ class Reclaimable(Protocol):
 
     A resolver that hands back something with a lifetime shorter than the assembly's says who
     releases it by registering the release here, and ``put`` is the whole of what it may ask for.
-    The seam stays this narrow so that it holds whatever the scope is eventually swapped for.
+    The seam stays this narrow so that what holds effects is swappable.
     """
 
     def put(self, effect: Disposable, /) -> Revoke:
