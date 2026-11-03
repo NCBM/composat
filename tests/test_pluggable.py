@@ -27,6 +27,7 @@ from composat import (
     ComponentRegistry,
     Declaration,
     Unit,
+    requirements_of,
 )
 from composat.std.pluggable import UnitLoader, reload_module
 
@@ -144,7 +145,7 @@ def requirements_in(components: tuple[type[Component], ...]) -> int:
     ``requirements()`` is the typed account of what a class asks for, so it is how a case tells one
     generation's source from another's without naming the class it wrote as a string.
     """
-    return sum(len(component.requirements()) for component in components)
+    return sum(len(requirements_of(component)) for component in components)
 
 
 def only_component(loader: UnitLoader, name: str) -> type[Component]:
@@ -157,7 +158,7 @@ def only_component(loader: UnitLoader, name: str) -> type[Component]:
 
 def at(component: type[Component], instance: str = "") -> ComponentKey:
     """The key ``component`` answers at under ``instance``."""
-    return ComponentKey(component.identity(), instance)
+    return ComponentKey(ComponentIdentity.of(component), instance)
 
 
 def wired(*declarations: Declaration) -> Assembly:

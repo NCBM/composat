@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from .component import Component
+from .component import Component, requirements_of
 from .dependency import DependencyGraph, DependencyInUseError
 from .errors import UnboundServiceError
 from .identity import ComponentIdentity, ComponentKey
@@ -51,7 +51,7 @@ class Declaration:
     @property
     def identity(self) -> ComponentIdentity:
         """The identity the class declares."""
-        return self.component_class.identity()
+        return ComponentIdentity.of(self.component_class)
 
     @property
     def key(self) -> ComponentKey:
@@ -106,11 +106,11 @@ class ComponentRegistry:
         bound to it: the annotation named nothing, and saying so beats answering with something else.
         """
         if issubclass(service, Component):
-            return service.identity()
+            return ComponentIdentity.of(service)
         provider = self._providers.get(service)
         if provider is None:
             raise UnboundServiceError(service)
-        return provider.identity()
+        return ComponentIdentity.of(provider)
 
     def declare(
         self,
@@ -205,7 +205,7 @@ class ComponentRegistry:
         """
         for key, declaration in self._declarations.items():
             if key.identity == identity:
-                return declaration.component_class.requirements()
+                return requirements_of(declaration.component_class)
         raise KeyError(identity)
 
     def order(self) -> tuple[ComponentIdentity, ...]:
@@ -256,7 +256,7 @@ class ComponentRegistry:
         Reading a requirement can already fail: an interface with nothing bound to it names no
         identity, and declining it here is what puts the error where the requirement is written down.
         """
-        return tuple(self.provider_identity(spec.service) for spec in declaration.component_class.requirements())
+        return tuple(self.provider_identity(spec.service) for spec in requirements_of(declaration.component_class))
 
     def _dropped(self, *keys: ComponentKey) -> tuple[ComponentIdentity, ...]:
         """The identities whose last declaration goes with ``keys``, dependants first.

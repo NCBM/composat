@@ -18,6 +18,7 @@ import pytest
 from composat import (
     Assembly,
     Component,
+    ComponentIdentity,
     ComponentKey,
     ComponentRegistry,
     ComponentState,
@@ -34,7 +35,7 @@ def run[T](coro: Coroutine[object, object, T], /) -> T:
 
 def at(component: type[Component], instance: str = "") -> ComponentKey:
     """The key ``component`` answers at under ``instance``."""
-    return ComponentKey(component.identity(), instance)
+    return ComponentKey(ComponentIdentity.of(component), instance)
 
 
 def declaring(*declarations: Declaration) -> ComponentRegistry:

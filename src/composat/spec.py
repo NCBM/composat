@@ -2,8 +2,8 @@
 
 The record is what a class hands out once it has read the fields its body declared: the registry
 draws its edges from these, the assembly orders by them, and a field read resolves through the
-descriptor installed from the same reading. A frozen record keeps ``Component.requirements()`` a
-pure query.
+descriptor installed from the same reading. A frozen record keeps :func:`composat.component.
+requirements_of` a pure query.
 """
 
 from __future__ import annotations

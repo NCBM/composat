@@ -14,6 +14,7 @@ import pytest
 
 from composat import (
     Component,
+    ComponentIdentity,
     ComponentKey,
     ComponentRegistry,
     Declaration,
@@ -84,12 +85,12 @@ class Right(Component):
     left: LeftService = require()
 
 
-STORAGE = Store.identity()
-ENGINE = Engine.identity()
-MIRROR = Mirror.identity()
-FACADE = Facade.identity()
-WEATHER = WeatherTool.identity()
-FORECASTER = Forecaster.identity()
+STORAGE = ComponentIdentity.of(Store)
+ENGINE = ComponentIdentity.of(Engine)
+MIRROR = ComponentIdentity.of(Mirror)
+FACADE = ComponentIdentity.of(Facade)
+WEATHER = ComponentIdentity.of(WeatherTool)
+FORECASTER = ComponentIdentity.of(Forecaster)
 
 
 def generation(name: str = "Generation", **requirements: type[object]) -> type[Component]:
@@ -276,7 +277,7 @@ class TestRedeclaring:
 
         assert registry.declaration(key).component_class is second
         assert registry.declaration(key).kwargs == {"dsn": "two"}
-        assert registry.order() == (first.identity(),)
+        assert registry.order() == (ComponentIdentity.of(first),)
 
     def test_a_replacement_that_asks_for_something_else_is_refused(self) -> None:
         registry = ComponentRegistry()

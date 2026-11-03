@@ -12,7 +12,15 @@ from collections.abc import Coroutine
 
 import pytest
 
-from composat import Component, ComponentKey, NoCallContextError, Reclaimable, RequirementSpec, require
+from composat import (
+    Component,
+    ComponentIdentity,
+    ComponentKey,
+    NoCallContextError,
+    Reclaimable,
+    RequirementSpec,
+    require,
+)
 from composat.component import attach
 from composat.context import current, current_or_none, open_call, put, resolve
 
@@ -37,7 +45,7 @@ class Reader(Component):
 
 def at(component: type[Component], instance: str = "") -> ComponentKey:
     """The key ``component`` answers at under ``instance``."""
-    return ComponentKey(component.identity(), instance)
+    return ComponentKey(ComponentIdentity.of(component), instance)
 
 
 class Recorder:

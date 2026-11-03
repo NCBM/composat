@@ -11,8 +11,8 @@ from typing import Annotated, Protocol, override
 
 import pytest
 
-from composat import ComponentKey, EffectScope, Reclaimable, UnboundRequirementError, require
-from composat.component import Component, attach
+from composat import ComponentIdentity, ComponentKey, EffectScope, Reclaimable, UnboundRequirementError, require
+from composat.component import Component, attach, capabilities_of, requirements_of
 from composat.spec import RequirementSpec
 
 
@@ -55,7 +55,7 @@ class Named(Component):
 
 class TestClassification:
     def test_a_component_and_a_protocol_are_requirements(self) -> None:
-        assert Reader.requirements() == (
+        assert requirements_of(Reader) == (
             RequirementSpec("store", Store),
             RequirementSpec("cache", CacheService),
         )
@@ -66,10 +66,10 @@ class TestClassification:
         class Unmarked(Component):
             cache: CacheService  # pyright: ignore[reportUninitializedInstanceVariable]
 
-        assert Unmarked.requirements() == ()
+        assert requirements_of(Unmarked) == ()
 
     def test_any_other_annotation_is_an_ordinary_attribute(self) -> None:
-        names = {requirement.name for requirement in Reader.requirements()}
+        names = {requirement.name for requirement in requirements_of(Reader)}
         assert "resource" not in names
         assert "notes" not in names
 
@@ -79,23 +79,23 @@ class TestClassification:
         assert isinstance(reader.resource, Redis)
 
     def test_the_extras_of_an_annotated_requirement_are_carried_untouched(self) -> None:
-        (requirement,) = Tagged.requirements()
+        (requirement,) = requirements_of(Tagged)
         assert requirement.extras == (MARKER,)
 
     def test_a_subclass_inherits_what_its_base_asks_for(self) -> None:
         class Child(Reader):
             pass
 
-        assert Child.requirements() == Reader.requirements()
+        assert requirements_of(Child) == requirements_of(Reader)
 
     def test_a_subclass_that_marks_one_of_its_own_answers_for_both(self) -> None:
         class Child(Reader):
             other: Store = require()
 
-        assert Child.requirements() == (*Reader.requirements(), RequirementSpec("other", Store))
+        assert requirements_of(Child) == (*requirements_of(Reader), RequirementSpec("other", Store))
 
     def test_the_contract_may_be_written_at_the_declaration_site(self) -> None:
-        assert Named.requirements() == (RequirementSpec("store", Store),)
+        assert requirements_of(Named) == (RequirementSpec("store", Store),)
 
     def test_a_marked_field_is_a_descriptor_from_the_moment_the_class_exists(self) -> None:
         # Off the class a requirement answers with the declaration itself, which is how a tool asks
@@ -140,7 +140,7 @@ class TestReadingARequirement:
             assert effects is reader.effect_scope
             return store
 
-        key = ComponentKey(Reader.identity())
+        key = ComponentKey(ComponentIdentity.of(Reader))
         attach(reader, key, resolver)
 
         assert reader.store is store
@@ -152,7 +152,7 @@ class TestReadingARequirement:
             return Store()
 
         reader = Reader()
-        attach(reader, ComponentKey(Reader.identity()), resolver)
+        attach(reader, ComponentKey(ComponentIdentity.of(Reader)), resolver)
         with pytest.raises(AttributeError, match="not assignable"):
             reader.store = Store()  # type: ignore[assignment]
 
@@ -174,14 +174,14 @@ class TestReadingARequirement:
             return store
 
         loud = Loud()
-        attach(loud, ComponentKey(Loud.identity()), resolver)
+        attach(loud, ComponentKey(ComponentIdentity.of(Loud)), resolver)
 
         assert loud.store is store
 
 
 class TestCapabilities:
     def test_a_component_that_writes_nothing_can_do_nothing(self) -> None:
-        assert Store.capabilities() == ()
+        assert capabilities_of(Store) == ()
 
     def test_a_component_that_writes_hooks_reports_them_in_a_fixed_order(self) -> None:
         class Full(Component):
@@ -190,7 +190,7 @@ class TestCapabilities:
             @override
             async def load(self) -> None: ...
 
-        assert Full.capabilities() == ("load", "unload")
+        assert capabilities_of(Full) == ("load", "unload")
 
     def test_a_base_that_writes_a_hook_is_inherited(self) -> None:
         class Base(Component):
@@ -200,10 +200,10 @@ class TestCapabilities:
         class Child(Base):
             pass
 
-        assert Child.capabilities() == ("unload",)
+        assert capabilities_of(Child) == ("unload",)
 
     def test_the_base_itself_claims_nothing(self) -> None:
-        assert Component.capabilities() == ()
+        assert capabilities_of(Component) == ()
 
     def test_an_override_counts_once(self) -> None:
         class Base(Component):
@@ -214,13 +214,13 @@ class TestCapabilities:
             @override
             async def unload(self) -> None: ...
 
-        assert Overriding.capabilities() == ("unload",)
+        assert capabilities_of(Overriding) == ("unload",)
 
     def test_a_misspelled_hook_is_not_a_capability(self) -> None:
         class Typo(Component):
             async def laod(self) -> None: ...
 
-        assert Typo.capabilities() == ()
+        assert capabilities_of(Typo) == ()
 
 
 class TestTheEpoch:
@@ -256,7 +256,7 @@ class TestLateDeclarations:
 
         Late.store = require()  # pyright: ignore[reportAttributeAccessIssue]
         with pytest.raises(ValueError, match=r"Late was handed store after it was made"):
-            _ = Late.requirements()
+            _ = requirements_of(Late)
 
     def test_reading_a_requirement_nothing_settled_says_so(self) -> None:
         class Late(Component):
@@ -271,4 +271,26 @@ class TestLateDeclarations:
             pass
 
         Plain.helper = staticmethod(lambda: 1)  # pyright: ignore[reportAttributeAccessIssue]
-        assert Plain.capabilities() == ()
+        assert capabilities_of(Plain) == ()
+
+
+class TestWhatTheFrameworkReads:
+    def test_a_class_cannot_answer_the_readings_the_framework_drives(self) -> None:
+        class Quiet(Component):
+            store: Store = require()
+
+            @classmethod
+            def requirements(cls) -> tuple[RequirementSpec, ...]:
+                return ()
+
+            @classmethod
+            def capabilities(cls) -> tuple[str, ...]:
+                return ("load", "unload")
+
+            @classmethod
+            def identity(cls) -> ComponentIdentity:
+                return ComponentIdentity("somewhere", "Quiet")
+
+        assert [spec.name for spec in requirements_of(Quiet)] == ["store"]
+        assert capabilities_of(Quiet) == ()
+        assert ComponentIdentity.of(Quiet).module == __name__

@@ -12,8 +12,9 @@ with no annotation, a private cache. A field is a requirement because the class 
 because of what its annotation looks like; the annotation says what the field reads as, which is how
 a checker keeps up with both halves.
 
-What the framework *does* to an instance is here too, as functions rather than methods — :func:`attach`,
-:func:`read` and :func:`reopen_epoch`: an operation an application must not be able to replace is not
+What the framework *does* to a component is here too, as functions rather than methods —
+:func:`requirements_of` and :func:`capabilities_of` on a type, :func:`attach`, :func:`read` and
+:func:`reopen_epoch` on an instance: an operation an application must not be able to replace is not
 offered to it as a member. ``@final`` on a method of the base answers the same question after the
 fact, refusing an extension the declaration had already invited.
 """
@@ -26,7 +27,7 @@ from typing import Annotated, ClassVar, Protocol, cast, get_args, get_origin, ge
 
 from .context import current_or_none
 from .errors import UnboundRequirementError
-from .identity import ComponentIdentity, ComponentKey
+from .identity import ComponentKey
 from .scope import EffectScope, Reclaimable
 from .spec import RequirementSpec
 from .state import ComponentStateControl
@@ -72,8 +73,8 @@ LIFECYCLE_HOOKS = ("load", "unload", "reload", "enable", "disable", "drain")
 """The hooks the state machine drives, in the order they are reported.
 
 The base declares all six, which gives ``@override`` something to check against and makes driving an
-unwritten hook an ordinary no-op. Declaring one is the base's job; :meth:`Component.capabilities`
-decides what a type claims.
+unwritten hook an ordinary no-op. Declaring one is the base's job; :func:`capabilities_of` decides
+what a type claims.
 """
 
 
@@ -241,12 +242,14 @@ class Component:
     A component is a plain class. Its identity is the path it was written at — the module and the
     qualified name there — which is what a reload keeps while replacing the class object. It declares
     the six lifecycle hooks, and answers nothing for any hook until a type writes its own:
-    :meth:`capabilities` reports the ones a type writes, and a component that writes none is one
+    :func:`capabilities_of` reports the ones a type writes, and a component that writes none is one
     nothing drives.
 
-    The framework's operations on an instance are functions in this module: :func:`attach` gives it
-    the key and the rule its requirements are read by, :func:`read` answers one of them, and
-    :func:`reopen_epoch` ends its epoch and starts the next.
+    What the framework reads and does on a component are functions in this module, not members of it:
+    :func:`requirements_of` and :func:`capabilities_of` on a type, and :func:`attach`, :func:`read` and
+    :func:`reopen_epoch` on an instance. An operation an application must not be able to replace is not
+    offered to it as a method — its identity is read by :meth:`ComponentIdentity.of`, which is where a
+    class's own path is turned into one.
     """
 
     #: The requirements this type declares, once settled; ``None`` until then. The map is complete
@@ -285,36 +288,6 @@ class Component:
         # two ends symmetric and a component that never loaded recycle an empty scope.
         self.effect_scope = EffectScope()
         self.state = ComponentStateControl()
-
-    @classmethod
-    def identity(cls) -> ComponentIdentity:
-        """The identity this type declares: the module it was written in, and its name there."""
-        return ComponentIdentity.of(cls)
-
-    @classmethod
-    def requirements(cls) -> tuple[RequirementSpec, ...]:
-        """The requirements this type declares, in declaration order, as plain records."""
-        return tuple(cls._requirements_of().values())
-
-    @classmethod
-    def capabilities(cls) -> tuple[str, ...]:
-        """The hooks this type writes: what the state machine is allowed to drive.
-
-        Read off the MRO with the base **skipped**, so :class:`Component` declaring a hook makes it
-        available to ``@override`` without claiming the capability for every component in existence.
-        An inherited hook counts (a subclass of a disposable component is disposable) and an override
-        counts once.
-
-        A misspelled hook counts as nothing, which is what the base's declarations buy: a checker
-        answers "there is no ``laod`` to override" at the typo, where a bare framework would report
-        one capability fewer and leave the cause far from the effect.
-        """
-        written: set[str] = set()
-        for klass in cls.__mro__:
-            if klass is Component or klass is object:
-                continue
-            written.update(name for name in LIFECYCLE_HOOKS if name in vars(klass))
-        return tuple(name for name in LIFECYCLE_HOOKS if name in written)
 
     @classmethod
     def _requirements_of(cls) -> dict[str, RequirementSpec]:
@@ -416,6 +389,43 @@ class Component:
         type writes it or not, and the base's answer is to do nothing.
         """
         _ = requirement
+
+
+def requirements_of(component: type[Component]) -> tuple[RequirementSpec, ...]:
+    """The requirements ``component`` declares, in declaration order, as plain records.
+
+    A reading of a type rather than a member of it, for the same reason :func:`attach` and
+    :func:`read` are: the framework's own readings are not an extension point. A class that could
+    answer differently would disagree with the descriptor the same declaration installed — the
+    registry draws its edges from this answer, and the field resolves through that descriptor — and
+    the two would part silently.
+
+    The map it reads is the class's own bookkeeping, reached from here on purpose: what an application
+    must not be able to answer for itself is a *method* on the class, and keeping the map private while
+    the reading lives here is exactly that split.
+    """
+    settled = component._requirements_of()  # pyright: ignore[reportPrivateUsage]
+    return tuple(settled.values())
+
+
+def capabilities_of(component: type[Component]) -> tuple[str, ...]:
+    """The hooks ``component`` writes: what the state machine is allowed to drive.
+
+    Read off the MRO with the base **skipped**, so :class:`Component` declaring a hook makes it
+    available to ``@override`` without claiming the capability for every component in existence. An
+    inherited hook counts (a subclass of a disposable component is disposable) and an override counts
+    once.
+
+    A misspelled hook counts as nothing, which is what the base's declarations buy: a checker answers
+    "there is no ``laod`` to override" at the typo, where a bare framework would report one capability
+    fewer and leave the cause far from the effect.
+    """
+    written: set[str] = set()
+    for klass in component.__mro__:
+        if klass is Component or klass is object:
+            continue
+        written.update(name for name in LIFECYCLE_HOOKS if name in vars(klass))
+    return tuple(name for name in LIFECYCLE_HOOKS if name in written)
 
 
 def attach(component: Component, key: ComponentKey, resolver: RequirementResolver) -> None:

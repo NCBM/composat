@@ -20,8 +20,10 @@ from .assembly import default_rule as default_rule
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
 from .component import Component as Component
 from .component import RequirementResolver as RequirementResolver
+from .component import capabilities_of as capabilities_of
 from .component import reopen_epoch as reopen_epoch
 from .component import require as require
+from .component import requirements_of as requirements_of
 from .context import CallContext as CallContext
 from .dependency import DependencyCycleError as DependencyCycleError
 from .dependency import DependencyError as DependencyError

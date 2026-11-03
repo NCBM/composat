@@ -79,7 +79,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 
-from .component import Component, RequirementResolver, attach
+from .component import Component, RequirementResolver, attach, requirements_of
 from .errors import KeyInTransitError, ServiceNotUpError
 from .identity import ComponentIdentity, ComponentKey
 from .manager import ComponentManager
@@ -721,7 +721,7 @@ class Assembly:
         for key, instance in tuple(self._up.items()):
             if key == excluding:
                 continue
-            for spec in instance.requirements():
+            for spec in requirements_of(type(instance)):
                 if self._registry.provider_identity(spec.service) != identity:
                     continue
                 try:

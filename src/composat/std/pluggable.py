@@ -59,6 +59,7 @@ from composat import (
     load_unit,
     load_units,
     loaded_unit,
+    requirements_of,
 )
 
 
@@ -190,7 +191,7 @@ def _repoint(name: str, module: ModuleType, previous: ModuleType) -> None:
 def _requirements_by_identity(module: ModuleType) -> dict[ComponentIdentity, tuple[tuple[str, type[object]], ...]]:
     """What each component in ``module`` asks for, as a comparable shape: field name and service."""
     return {
-        ComponentIdentity.of(cls): tuple((spec.name, spec.service) for spec in cls.requirements())
+        ComponentIdentity.of(cls): tuple((spec.name, spec.service) for spec in requirements_of(cls))
         for cls in components_of(module)
     }
 

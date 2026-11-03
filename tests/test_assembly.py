@@ -23,6 +23,7 @@ from composat import (
     Assembly,
     AssemblyResult,
     Component,
+    ComponentIdentity,
     ComponentKey,
     ComponentManager,
     ComponentRegistry,
@@ -267,7 +268,7 @@ class RefusingScope:
 
 def at(component: type[Component], instance: str = "") -> ComponentKey:
     """The key ``component`` answers at under ``instance``."""
-    return ComponentKey(component.identity(), instance)
+    return ComponentKey(ComponentIdentity.of(component), instance)
 
 
 def asking(service: type[object], name: str = "service") -> RequirementSpec:
