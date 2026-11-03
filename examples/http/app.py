@@ -3,19 +3,19 @@
 Four lifetimes, and one line each — which is the reason they are in one deployment rather than four:
 
 * the **process** is the assembly: ``start`` and ``stop`` are the lifespan, and what is declared at
-  the empty qualifier is one instance for everything the process runs (``Store``);
-* a **tenant** is a qualifier: ``Shop`` is declared once per tenant, so a request is served by the
+  the empty qualifier is one instance for everything the process runs (``Tally``);
+* a **tenant** is a qualifier: ``Renderer`` is declared once per tenant, so a request is served by the
   instance its path names;
-* a **session** is a qualifier on another identity: ``Basket`` is admitted the first time a client
+* a **session** is a qualifier on another identity: ``Session`` is admitted the first time a client
   arrives, and withdrawn when the client says so or when this deployment decides it has gone idle;
-* a **request** is a call: ``open_call`` wraps the response, and the ``Cart`` it owns is closed once
-  the last byte has gone out.
+* a **request** is a call: ``open_call`` wraps the response, and the ``Rendering`` it owns is closed
+  once the last byte has gone out.
 
 That a tenant's instance can read the process-wide one is exactly one line, where the assembly is
-built: ``answering_from_the_root(registry, up, only={Store})``. Nothing else crosses that axis, and
+built: ``answering_from_the_root(registry, up, only={Tally})``. Nothing else crosses that axis, and
 nothing crosses the other way — which is why a session holds state and needs nobody, so a client can
 be admitted the moment it arrives. Work that outlives a response is the *instance's* (``effect_scope``
-in :meth:`Shop.persist`), not the call's.
+in :meth:`Renderer.persist`), not the call's.
 
 The transport is ASGI, written out by hand: no router, no middleware, no framework. A refusal is
 decided before the first byte goes out, because after that the status has been sent and there is no
@@ -54,7 +54,7 @@ TENANTS = ("acme", "globex")
 """The tenants this deployment runs: each one is a qualifier, and each one is declared at start-up."""
 
 
-class Store(Component):
+class Tally(Component):
     """One for the process: the rows every request rendered, and what became of the work it started."""
 
     written: int = 0
@@ -70,22 +70,22 @@ class Store(Component):
         self.swept = 0
 
 
-class Cart:
-    """What one request owns: the rows it rendered, and a close the store can see."""
+class Rendering:
+    """What one request owns: the rows it rendered, and a close the tally can see."""
 
-    store: Store
+    tally: Tally
     rows: list[str]
 
-    def __init__(self, store: Store) -> None:
-        self.store = store
+    def __init__(self, tally: Tally) -> None:
+        self.tally = tally
         self.rows = []
 
     def close(self) -> None:
-        """Give the cart up: called once, by whatever opened it, when the request is over."""
-        self.store.let_go += 1
+        """Give the rendering up: called once, by whatever opened it, when the request is over."""
+        self.tally.let_go += 1
 
 
-class Basket(Component):
+class Session(Component):
     """One for a client: what its requests added between them, and when it was last seen.
 
     It asks for nothing, which is what makes it possible to run one per client: a session's address is
@@ -108,59 +108,59 @@ class Basket(Component):
         self.rows.append(row)
 
 
-class Shop(Component):
+class Renderer(Component):
     """One for a tenant: what a request is rendered by, in that tenant's own terms."""
 
-    store: Store = require()
+    tally: Tally = require()
 
     delay: float = 0.05
 
     def tenant(self) -> str:
         """Whose instance this is, read off the address it answers at."""
-        if self.binding is None:  # pragma: no cover - a shop driven outside an assembly has no address
-            raise RuntimeError("the shop is not attached to a key")
+        if self.binding is None:  # pragma: no cover - a renderer driven outside an assembly has no address
+            raise RuntimeError("the renderer is not attached to a key")
         return self.binding.key.instance
 
-    def cart(self) -> Cart:
+    def begin(self) -> Rendering:
         """What this request will hold until its response is finished."""
-        return Cart(self.store)
+        return Rendering(self.tally)
 
     def prepare(self, text: str) -> None:
         """Refuse a request that cannot be answered: before the first byte, and before anything is opened."""
         if not text.strip():
             raise ValueError("nothing to render")
 
-    async def render(self, cart: Cart, basket: Basket, text: str) -> AsyncIterator[bytes]:
-        """Answer the request one piece at a time, in the tenant's row and the client's basket.
+    async def render(self, rendering: Rendering, session: Session, text: str) -> AsyncIterator[bytes]:
+        """Answer the request one piece at a time, in the tenant's row and the client's session.
 
-        The store is a requirement of a *tenant* instance, so it is answered by the process-wide
+        The tally is a requirement of a *tenant* instance, so it is answered by the process-wide
         instance through the rule this deployment installed — a read that would be a miss under the
         framework's own rule, which looks at the asker's qualifier and no further.
         """
         for word in text.split():
-            cart.rows.append(word)
-            basket.add(word)
-            self.store.written += 1
-            yield f"{self.tenant()}:{len(cart.rows)}/{len(basket.rows)}:{word}\n".encode()
+            rendering.rows.append(word)
+            session.add(word)
+            self.tally.written += 1
+            yield f"{self.tenant()}:{len(rendering.rows)}/{len(session.rows)}:{word}\n".encode()
             await asyncio.sleep(0)
 
-    def persist(self, cart: Cart) -> None:
+    def persist(self, rendering: Rendering) -> None:
         """Write the rows down where the next request will find them, off this request's path.
 
         The job belongs to the *instance*, not to the call: the response is long gone by the time it
         finishes, so registering it on the call would cancel it at the end of the body. ``effect_scope``
         is the lifetime that matches — cancelling the task is what unloading the instance does to it.
         """
-        task = asyncio.create_task(self._flush(cart))
+        task = asyncio.create_task(self._flush(rendering))
         _ = self.effect_scope.put(task.cancel)
 
-    async def _flush(self, cart: Cart) -> None:
+    async def _flush(self, rendering: Rendering) -> None:
         try:
             await asyncio.sleep(self.delay)  # where the write itself would go
-            self.store.flushed += len(cart.rows)
+            self.tally.flushed += len(rendering.rows)
         except asyncio.CancelledError:
             # Taken down mid-write: what the request read is recorded as swept rather than written.
-            self.store.swept += len(cart.rows)
+            self.tally.swept += len(rendering.rows)
             raise
 
 
@@ -197,7 +197,7 @@ class Application:
         self.tenants = tenants
         self.ttl = ttl
         self.clock = clock
-        self.roots = (key_of(Store), *(key_of(Shop, tenant) for tenant in tenants))
+        self.roots = (key_of(Tally), *(key_of(Renderer, tenant) for tenant in tenants))
 
     async def start(self) -> None:
         """Bring up the process and its tenants: what the lifespan's startup is."""
@@ -207,39 +207,39 @@ class Application:
         """Take down everything that is up, the clients admitted on the way included."""
         _ = await self.assembly.stop(*self.assembly.keys())
 
-    def held(self) -> Store:
-        """The instance every request shares: what outlived all of them."""
-        instance = self.assembly.instance(key_of(Store))
-        if not isinstance(instance, Store):
-            raise RuntimeError("nothing is up under the store")
+    def tally(self) -> Tally:
+        """The instance every request shares: what outlived all of them, and what survived them."""
+        instance = self.assembly.instance(key_of(Tally))
+        if not isinstance(instance, Tally):
+            raise RuntimeError("nothing is up under the tally")
         return instance
 
-    def shop(self, tenant: str) -> Shop | None:
+    def renderer(self, tenant: str) -> Renderer | None:
         """The tenant's instance, or ``None`` when this deployment does not run that tenant."""
-        instance = self.assembly.instance(key_of(Shop, tenant))
-        return instance if isinstance(instance, Shop) else None
+        instance = self.assembly.instance(key_of(Renderer, tenant))
+        return instance if isinstance(instance, Renderer) else None
 
-    async def session(self, client: str) -> Basket:
-        """The client's basket: admitted on arrival, reused after that, replaced once it has idled."""
-        key = key_of(Basket, client)
+    async def session(self, client: str) -> Session:
+        """The client's session: admitted on arrival, reused after that, replaced once it has idled."""
+        key = key_of(Session, client)
         now = self.clock()
         held = self.assembly.instance(key)
-        if isinstance(held, Basket):
+        if isinstance(held, Session):
             if now - held.touched_at > self.ttl:
                 _ = await self.assembly.evict(key)
             else:
                 held.touch(now)
                 return held
-        result = await self.assembly.admit(Declaration(Basket, instance=client))
+        result = await self.assembly.admit(Declaration(Session, instance=client))
         admitted = self.assembly.instance(key)
-        if not isinstance(admitted, Basket):
+        if not isinstance(admitted, Session):
             raise RuntimeError(f"the client {client} was not admitted: {result.failed}")
         admitted.touch(now)
         return admitted
 
     async def bye(self, client: str) -> bool:
         """Withdraw what the client held; whether there was anything to withdraw."""
-        key = key_of(Basket, client)
+        key = key_of(Session, client)
         if self.assembly.instance(key) is None:
             return False
         _ = await self.assembly.evict(key)
@@ -276,8 +276,8 @@ class Application:
         """One request: the tenant from the path, the client from a header, the body from the request."""
         tenant, action = _route_of(scope)
         client = _headers_of(scope).get("x-session", "")
-        shop = self.shop(tenant)
-        if shop is None:
+        renderer = self.renderer(tenant)
+        if renderer is None:
             await self._reply(send, 404, b"no such tenant")
             return
         if not client:
@@ -294,22 +294,22 @@ class Application:
         # after the first byte it would be a truncation instead.
         text = _body_of(await receive()).decode("utf-8", "replace")
         try:
-            shop.prepare(text)
+            renderer.prepare(text)
         except ValueError as refusal:
             await self._reply(send, 400, str(refusal).encode())
             return
 
-        basket = await self.session(client)
+        session = await self.session(client)
 
-        async with open_call(key_of(Shop, tenant), self.assembly.rule) as call:
-            cart = shop.cart()
-            _ = call.put(cart.close)
+        async with open_call(key_of(Renderer, tenant), self.assembly.rule) as call:
+            rendering = renderer.begin()
+            _ = call.put(rendering.close)
             await send({"type": "http.response.start", "status": 200, "headers": []})
-            async for chunk in shop.render(cart, basket, text):
+            async for chunk in renderer.render(rendering, session, text):
                 await send({"type": "http.response.body", "body": chunk, "more_body": True})
             await send({"type": "http.response.body", "body": b"", "more_body": False})
 
-        shop.persist(cart)
+        renderer.persist(rendering)
 
     async def _reply(self, send: Send, status: int, body: bytes) -> None:
         """Answer with a status and a body: the two messages an ASGI response is."""
@@ -339,11 +339,11 @@ def _body_of(message: Message) -> bytes:
 def build() -> Application:
     """Declare the process and its tenants, and say which identities answer for every one of them.
 
-    ``only={Store}`` is the whole of the crossing: a tenant's shop reads the process-wide store, and
-    everything else — a session, another tenant's instance — is as far away as it was.
+    ``only={Tally}`` is the whole of the crossing: a tenant's renderer reads the process-wide tally,
+    and everything else — a session, another tenant's instance — is as far away as it was.
     """
     registry = ComponentRegistry()
     up: dict[ComponentKey, Component] = {}
-    rule = answering_from_the_root(registry, up, only={Store})
-    _ = registry.declare_all((Declaration(Store), *(Declaration(Shop, instance=tenant) for tenant in TENANTS)))
+    rule = answering_from_the_root(registry, up, only={Tally})
+    _ = registry.declare_all((Declaration(Tally), *(Declaration(Renderer, instance=tenant) for tenant in TENANTS)))
     return Application(Assembly(registry, up=up, rule=rule), TENANTS)
