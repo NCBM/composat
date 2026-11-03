@@ -337,6 +337,20 @@ class Assembly:
         """Every key that is up, in the order it came up."""
         return tuple(self._up)
 
+    def declaration(self, key: ComponentKey) -> Declaration:
+        """How ``key`` was declared: the class, the qualifier, and what it is built with.
+
+        A read of what the process *declared*, not of what is up — the two are separate facts, and this
+        is the one a caller needs to build another instance under the same key: a swap takes a new
+        class with the same construction, and a caller that had to keep its own copy of every
+        declaration would be a second record that can disagree with the registry's.
+
+        The registry is where declarations live, so the answer is its own (:meth:`ComponentRegistry.
+        declaration`); ``KeyError`` when nothing is declared under the key, which is a question about
+        the call rather than about what is running.
+        """
+        return self._registry.declaration(key)
+
     def observe(self, observer: Observer) -> Unsubscribe:
         """Notice what this assembly does to the keys it holds, as it does it.
 

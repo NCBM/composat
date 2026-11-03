@@ -420,6 +420,18 @@ class TestAssembly:
         assert assembly.instance(at(Engine, "tenant-a")) is engine
         assert assembly.instance(at(Engine, "tenant-b")) is None
 
+    def test_a_key_can_be_asked_how_it_was_declared(self) -> None:
+        declaration = Declaration(Store, instance="tenant-a", kwargs={"dsn": "memory"})
+        assembly = Assembly(declaring(declaration))
+
+        assert assembly.declaration(at(Store, "tenant-a")) == declaration
+
+    def test_a_key_nothing_was_declared_under_is_refused(self) -> None:
+        assembly = Assembly(ComponentRegistry())
+
+        with pytest.raises(KeyError):
+            _ = assembly.declaration(at(Store))
+
 
 class TestReport:
     def test_a_batch_that_left_every_key_alone_is_ok(self) -> None:
