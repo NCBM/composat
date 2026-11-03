@@ -19,10 +19,8 @@ from composat import EffectScope
 class InFlight:
     """The work one instance started and has not finished.
 
-    Started work is registered here rather than with a bare ``create_task`` for two reasons that are
-    the same reason: the instance has to be able to wait for it, and something has to cancel it if
-    nobody waits. Both are answered by adding it — the epoch cancels it if this instance is torn down
-    without a drain, and :meth:`drain` waits for it before that happens.
+    Started work is registered here rather than with a bare ``create_task`` because two things have to
+    be able to happen to it: this instance waits for it, and its epoch cancels it when nobody does.
 
     A failure is not the drain's to report. A task that raises belongs to whoever started the work,
     and :meth:`drain` leaves it alone: it is collected by the loop, which is where a background
