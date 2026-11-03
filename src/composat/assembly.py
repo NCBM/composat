@@ -4,56 +4,14 @@ Driving a component through its states is the manager's job, and deciding what i
 registry's; what is here is the table the two meet in — one instance per key — the answer a declared
 requirement reads out of it, and the verbs that fill the table and empty it.
 
-A batch that comes up short is reported (:class:`AssemblyResult`) rather than raised: one tenant's
-broken configuration stays that tenant's problem, and the call site reads which keys failed with
-what. Asking for the other reading — a batch that is atomic — is a request, and that one raises. A
-swap reports the same way (:class:`Replacement`), because a replacement that landed with a dependant
-complaining, or with its own ``enable`` refusing, is neither an unchanged key nor a failed swap.
-
-**What the table does is reported as it happens.** An instance's own control reports each move it
-commits, and this assembly adds the key and the generation and hands the result to whoever
-subscribed (:meth:`Assembly.observe`). Those events are *staged* inside the instance's lock and
-*delivered* outside it, so an application's handler never runs inside a move — one that awaited
-there would be waiting for the lock it is called under. A handler's failure is reported
-(:attr:`AssemblyResult.observer_failures`) rather than raised, because an observer that could stop a
-batch would be a decider, and deciding belongs to admission and to the hooks.
-
-**A batch is closed over what its keys need.** ``start(App:tenant-a)`` brings up what ``App``
-declares, transitively, each dependency at the qualifier of the key that named it: instances of one
-identity are told apart by the qualifier, so a reader served by one tenant is answered by that
-tenant's provider. An identity the caller listed itself is left where it was listed — naming a
-dependency is how a deployment says where that thing sits — and an implied key that is already up is
-passed over rather than started a second time. ``stop`` is deliberately not the mirror of that: it
-takes down the keys it was given and nothing else, because a dependency may be serving keys the
-caller did not name.
-
-**A level is moved, not rebuilt.** ``start(..., enable=False)`` leaves a batch built and not serving,
-and :meth:`Assembly.migrate` is what takes it the rest of the way: the same table, the same report,
-and the direction of the move deciding the order. That batch does not close over what its keys
-require, unlike ``start`` — a provider left serving under a dependant that was put back into service
-is the caller's instruction rather than an oversight here, which is the reading ``stop`` takes too.
-
-**A batch is admitted before anything is built.** A key nothing declares, a key listed twice, a key
-already up: all three are refused as exceptions, because they are facts about the call rather than a
-component failing on its own, and half a batch already up with nothing to report it would be the
-worst of both readings.
-
-**A key in transit is spoken for.** A batch speaks for the keys it names from the moment it accepts
-them until the last of them is done, and for the keys it derived on the way, because those are the
-same promise. Without that, two calls both read "not up" and both build: a key taken down and built
-again while its first generation is still unloading, a second generation left behind by whoever wrote
-the table last. The claim is one region with no ``await`` in it, which is what makes it a claim — the
-event loop already refuses to interleave two such regions — so nothing here is locked, and tenants
-that have nothing to do with each other go on running side by side. A second call is refused rather
-than queued (:class:`~composat.errors.KeyInTransitError`): a key has one writer, and the caller that
-still holds the intent is the one that can say which of the two it meant.
-
-**What is declared changes under a running assembly.** An application that admits a component when a
-connection arrives declares it then, and :meth:`Assembly.admit` is that declaration together with the
-batch that brings it up; :meth:`Assembly.evict` is the pair of taking it down and withdrawing it.
-"Declared" and "up" go on being two facts either side of that: a declaration that outlives its key is
-what a failed admission leaves, which :meth:`Assembly.start` retries and :meth:`Assembly.evict`
-clears.
+Two readings run through every verb. A batch that comes up short is *reported*
+(:class:`AssemblyResult`), because one tenant's broken configuration stays that tenant's problem;
+what is wrong with the call itself — a key nothing declares, a key listed twice, a key already up —
+is raised before the first instance exists. And a verb speaks for the keys it names, and for the ones
+it derived, until it is done with them, so no second call moves one of them: the claim is one region
+with no ``await`` in it (:meth:`Assembly._claim`), which the event loop already refuses to interleave,
+so nothing here is locked and tenants that have nothing to do with each other go on running side by
+side.
 
 The rule is a function of the table rather than a method of the thing that fills it
 (:func:`answering_from`), and that is a reading rather than a style. A requirement is answered from
@@ -101,9 +59,8 @@ class Event:
     event.instance`` is the whole reading of "is this still the one the key answers with" — a number
     would be a second table to look it up in.
 
-    ``undone`` is a hook putting its own step back: the arrival was reported when it was committed,
-    so the state the instance does not rest in is corrected rather than left standing. Nothing else
-    about the record distinguishes a rollback — the states say which way it went.
+    ``undone`` is the move that did not hold: nothing else about the record distinguishes a rollback,
+    and the states say which way it went.
     """
 
     key: ComponentKey
@@ -134,10 +91,6 @@ class AssemblyResult:
 
     A key the batch left alone is in neither tuple — stopping a key that was never up has an empty
     report about it, and a batch told to do nothing reports exactly that.
-
-    Reporting rather than raising is the default reading: one tenant's broken configuration stays
-    that tenant's problem. A batch that asks to be atomic is the other reading, and it raises instead
-    of answering with this.
 
     ``observer_failures`` is deliberately not ``failed``: that map is the errors of hooks, keyed by
     the component they belong to, and a handler that could not write its line down is not a component
@@ -271,10 +224,9 @@ def default_rule(
     that is declared and is not up is a miss (``ServiceNotUpError``), never a reason to answer from
     another instance, which would be answering a question the caller did not ask.
 
-    The mechanism is :func:`answering_from`, and this is that mechanism over the shortest list there
-    is. A deployment that wants a second place — one instance at the root answering for every
-    qualifier, or a version pinned per tenant — hands its own candidates in, and keeps the level
-    policing and the refusals that are written down there.
+    A deployment that wants a second place — one instance at the root answering for every qualifier,
+    or a version pinned per tenant — hands its own candidates to :func:`answering_from`, and keeps
+    the level policing and the refusals that are written down there.
     """
     return answering_from(registry, instances, _own_qualifier)
 
@@ -309,11 +261,10 @@ class Assembly:
 
     One instance per key: an identity may have several (a tenant each), and each answers at its own
     qualifier. :meth:`start` fills the table against the registry's order and :meth:`stop` empties it
-    against the reverse, and both report what happened rather than raising — except for what is wrong
-    with the call itself, which is refused before the first instance exists. :meth:`migrate` moves the
-    keys already in it between the levels an instance rests at, and :meth:`enable` and :meth:`quiesce`
-    are the two of those a deployment names. :meth:`replace` puts a new generation behind a key, and
-    :meth:`admit` and :meth:`evict` are what changes the declarations the table is filled from.
+    against the reverse. :meth:`migrate` moves the keys already in it between the levels an instance
+    rests at, and :meth:`enable` and :meth:`quiesce` are the two of those a deployment names.
+    :meth:`replace` puts a new generation behind a key, and :meth:`admit` and :meth:`evict` are what
+    changes the declarations the table is filled from.
 
     Which instance answers a requirement is not decided here but in the rule this assembly was handed,
     and that rule reads this same table: an instance that came up a moment ago is what the next field
@@ -438,7 +389,7 @@ class Assembly:
         failure, and it goes the way of the exception.
 
         The keys are spoken for before the first instance exists and until the last of them is done,
-        the ones this call derived included: a second call that would build one of them is refused
+        the ones this call derived included, so a second call that would build one of them is refused
         rather than racing this one (:class:`~composat.errors.KeyInTransitError`).
         """
         batch = _in_order(self._closed(self._require_startable(keys)), self._registry.order())
@@ -582,43 +533,32 @@ class Assembly:
     async def replace(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
         """Put a new instance behind ``key``, without a gap in what the key answers.
 
-        ``declaration`` has to name ``key``: the slot is what is being replaced, and a declaration for
-        somewhere else would start a second instance where this one is meant to take over. Something
-        has to be up under it, or there is nothing to swap for.
+        ``declaration`` has to name ``key``, and something has to be up under it: the slot is what is
+        being replaced, and a declaration for somewhere else would start a second instance where this
+        one is meant to take over.
 
         The declaration moves first, so a generation the registry will not take costs nothing: it is
         refused before an instance is built, and the key keeps answering what it answered.
 
         The new generation is then built and brought to ``LOADED`` — ``load`` has run, so its fields
-        read and its requirements resolve, and nothing it does on ``enable`` has happened — and only
-        after it answers the key and the generation it replaced has let go is it brought to the level
-        that one *served* at. That is what keeps a registration made on the way up (a matcher in a
-        shared dispatcher, a row in a table) from being live twice: the old generation is gone before
-        the new one starts serving. It is also what makes this a change of instance rather than a
-        change of level.
-
-        The key moves before the old generation is torn down, not after: a key that answered nothing
-        while the old one unloaded would be the gap this verb exists to avoid. So what a reader sees
-        during that teardown is the new generation at ``LOADED`` — built, prepared, and not yet
-        taking work — and publishing it has to come after, because the old generation has to be done
-        with whatever the two would otherwise be doing at the same time.
-
-        A key that rests at ``LOADED`` already has no publish segment: nothing it replaced was
+        read and its requirements resolve, and nothing it does on ``enable`` has happened — and the key
+        moves to it before the old generation is torn down: a key that answered nothing while the old
+        one unloaded would be the gap this verb exists to avoid. What a reader sees during that
+        teardown is the new generation at ``LOADED``, built and not yet taking work. Only after the old
+        generation has let go is the new one brought to the level that one *served* at, which keeps a
+        registration made on the way up (a matcher in a shared dispatcher, a row in a table) from being
+        live twice. A key that rested at ``LOADED`` has no publish segment: nothing it replaced was
         serving, so the swap is the one move it always was.
 
-        Everything that raises happens before the key is touched — a declaration the registry will
-        not take, and a generation that will not come up, which is taken back down and leaves the old
+        Everything that raises happens before the key is touched — a declaration the registry will not
+        take, and a generation that will not come up, which is taken back down and leaves the old
         declaration and the old instance exactly as they were found. Everything after the swap is
-        *reported*: a dependant that objected to being told, an old instance whose ``unload`` refused
-        (it is down regardless — that is what the state machine commits), and a new instance that
-        would not be put into service. The last is not a failed swap: the key answers this
-        generation, and what failed is its ``enable``, so it rests at ``LOADED`` with the refusal in
-        :attr:`Replacement.published`.
+        *reported* (:class:`Replacement`).
 
-        Both generations are reported, and both at this key, in the order they happened: the new
-        one's as it comes up, the quiet retreat of the one it replaced, and the new one's ``enable``
-        last of all. ``event.instance`` is what tells the two apart, so a ledger sees the hand-over
-        instead of a gap, and a handler that only wants the current answer asks the table
+        Both generations are reported at this key, in the order they happened: the new one's as it
+        comes up, the quiet retreat of the one it replaced, and the new one's ``enable`` last of all.
+        ``event.instance`` is what tells the two apart, so a ledger sees the hand-over instead of a
+        gap, and a handler that only wants the current answer asks the table
         (``instance(key) is event.instance``).
 
         The key is spoken for from before the registry is touched until the swap is done, so a stop or
@@ -651,11 +591,7 @@ class Assembly:
 
         Checked as a set before any of it is written, so a batch refused for one key takes none of
         them — half a claim would be worse than none, since the refused call leaves no way to find out
-        which half. Both loops are one region with no ``await`` in it, which is the whole mechanism:
-        the event loop does not interleave two such regions, so what one call reads another cannot
-        have changed. A lock would buy the same thing at the price of serializing tenants that share
-        nothing, and it would have to be reentrancy-guarded, because a hook runs inside the batch that
-        is holding it.
+        which half.
 
         ``what`` is the phrase a refused caller is told, and it is the verb's own: "being brought up"
         and "being taken down" are different answers to "can I wait for it".
