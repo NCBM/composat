@@ -1,7 +1,8 @@
 """composat: a component lifespan interface.
 
 The rewrite is rebuilding the package layer by layer. What is here so far is the foundation the
-rest stands on — identities and keys, effect scopes, the component base and what it declares, the
+rest stands on — identities and keys, effect scopes, the call level that says whose work a read
+belongs to and where its effects end, the component base and what it declares, the
 state machine and the manager that drives it, the dependency graph, the registry of declarations,
 and the assembly: the table of what is up, the rule a requirement is answered by, the batch verbs
 that fill the table and empty it, the report they hand back, and the stream of moves they report
@@ -20,11 +21,17 @@ from .assembly import default_rule as default_rule
 from .component import LIFECYCLE_HOOKS as LIFECYCLE_HOOKS
 from .component import Component as Component
 from .component import RequirementResolver as RequirementResolver
+from .component import attach as attach
 from .component import capabilities_of as capabilities_of
 from .component import reopen_epoch as reopen_epoch
 from .component import require as require
 from .component import requirements_of as requirements_of
 from .context import CallContext as CallContext
+from .context import current as current
+from .context import current_or_none as current_or_none
+from .context import open_call as open_call
+from .context import put as put
+from .context import resolve as resolve
 from .dependency import DependencyCycleError as DependencyCycleError
 from .dependency import DependencyError as DependencyError
 from .dependency import DependencyGraph as DependencyGraph

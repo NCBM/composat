@@ -7,10 +7,10 @@ from composat import (
     ComponentKey,
     Reclaimable,
     RequirementSpec,
+    attach,
     capabilities_of,
     requirements_of,
 )
-from composat.component import attach
 from examples.doubles.app import FakeRepo, Repo, Service
 from examples.support import run
 

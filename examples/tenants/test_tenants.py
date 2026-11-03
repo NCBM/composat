@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from composat.context import current, open_call
+from composat import current, open_call
 from examples.support import run
 from examples.tenants.app import Database, Service, build, declaration_of, key_of
 

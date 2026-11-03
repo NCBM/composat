@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from composat import NoCallContextError
-from composat.context import current, open_call
+from composat import NoCallContextError, current, open_call
 from examples.calls.app import Page, Session, build, writer
 from examples.support import run
 
