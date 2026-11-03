@@ -37,6 +37,19 @@ def _bytes_of(value: object) -> bytes:
     return value if isinstance(value, bytes) else b""
 
 
+def _session_counts(conversation: Conversation) -> list[int]:
+    """How many rows the client's session held at each word this response rendered.
+
+    A row is ``tenant:rendered/session:word``, so the second figure is the one this asks for.
+    """
+    counts: list[int] = []
+    for row in (row for body in conversation.bodies() for row in body.split(b"\n") if row):
+        _tenant, figures, _word = row.split(b":")
+        _rendered, held = figures.split(b"/")
+        counts.append(int(held))
+    return counts
+
+
 async def post(app: Application, path: str, /, *, client: str = "", body: bytes = b"") -> Conversation:
     """One request, driven the way a server drives it: hand it the body, keep what it sent."""
     sent: list[Message] = []
@@ -308,6 +321,46 @@ def test_a_client_that_goes_away_mid_body_still_loses_nothing() -> None:
             assert tally.written == 1
             assert tally.flushed == 0
             assert tally.swept == 0
+
+        _ = await serve(app, during)
+
+    run(main())
+
+
+def test_a_crowd_of_clients_arriving_together_gets_one_session_each() -> None:
+    async def main() -> None:
+        app = build()
+        clients = [f"c{index}" for index in range(20)]
+        words = (b"a b", b"c d", b"e f")
+
+        async def during() -> None:
+            tally = app.tally()
+            # Three requests per client, all sixty let go at once: each client's first admission is
+            # asked for three times over, and a key has one writer.
+            conversations = await asyncio.gather(
+                *(
+                    post(app, "/acme", client=client, body=words[which])
+                    for which in range(len(words))
+                    for client in clients
+                )
+            )
+
+            assert {conversation.status for conversation in conversations} == {200}
+            # One session per client, holding the six words its three requests rendered.
+            up = app.assembly.keys()
+            identity = key_of(Session).identity
+            assert {key.instance for key in up if key.identity == identity} == set(clients)
+            for client in clients:
+                session = app.assembly.instance(key_of(Session, client))
+                assert isinstance(session, Session)
+                assert sorted(session.rows) == ["a", "b", "c", "d", "e", "f"]
+            # Every append printed the count it landed on, so each client's three responses name the
+            # six rows of its own session between them — in whichever order the loop let them write.
+            for offset, _client in enumerate(clients):
+                their_three = conversations[offset :: len(clients)]
+                assert sorted(count for one in their_three for count in _session_counts(one)) == [1, 2, 3, 4, 5, 6]
+            assert tally.written == 120
+            assert tally.let_go == 60
 
         _ = await serve(app, during)
 

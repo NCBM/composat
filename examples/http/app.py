@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping, Sequence
-from typing import cast, final
+from typing import cast, final, override
 
 from composat import (
     Assembly,
@@ -37,6 +37,7 @@ from composat import (
     ComponentKey,
     ComponentRegistry,
     Declaration,
+    KeyInTransitError,
     require,
 )
 from composat.context import open_call
@@ -93,16 +94,33 @@ class Session(Component):
     """
 
     rows: list[str]
-    touched_at: float
+    touched_at: float | None
 
     def __init__(self) -> None:
         super().__init__()
         self.rows = []
-        self.touched_at = 0.0
+        self.touched_at = None
 
     def touch(self, now: float) -> None:
         """Say the client is still here: the reading the deployment's idle rule is made of."""
         self.touched_at = now
+
+    def idle_past(self, ttl: float, now: float) -> bool:
+        """Whether the client has been gone for longer than ``ttl``: nobody's touch is not gone yet.
+
+        A session exists before the admission that made it has returned, and the request that finds it
+        then is not looking at an idle client — so the clock starts at the first touch, not at birth.
+        """
+        return self.touched_at is not None and now - self.touched_at > ttl
+
+    @override
+    async def load(self) -> None:
+        """Where a session is restored from the store before it serves: the turn an admission takes.
+
+        Standing in for that read is the point: an admission that takes a turn is one a second request
+        can arrive in the middle of, and a key has one writer.
+        """
+        await asyncio.sleep(0)
 
     def add(self, row: str) -> None:
         self.rows.append(row)
@@ -220,22 +238,34 @@ class Application:
         return instance if isinstance(instance, Renderer) else None
 
     async def session(self, client: str) -> Session:
-        """The client's session: admitted on arrival, reused after that, replaced once it has idled."""
+        """The client's session: admitted on arrival, reused after that, replaced once it has idled.
+
+        A key has one writer, and one client's requests arrive together: the assembly refuses the
+        second admission of a key rather than queueing it, so what that costs is paid here — wait for
+        the move in flight to land, and look again, rather than fail a request over who got there
+        first. The wait is a turn of the loop, not a lock: what is being waited for is one move by
+        whoever else is serving the same client.
+        """
         key = key_of(Session, client)
-        now = self.clock()
-        held = self.assembly.instance(key)
-        if isinstance(held, Session):
-            if now - held.touched_at > self.ttl:
-                _ = await self.assembly.evict(key)
-            else:
+        while True:
+            now = self.clock()
+            held = self.assembly.instance(key)
+            if isinstance(held, Session) and not held.idle_past(self.ttl, now):
                 held.touch(now)
                 return held
-        result = await self.assembly.admit(Declaration(Session, instance=client))
-        admitted = self.assembly.instance(key)
-        if not isinstance(admitted, Session):
-            raise RuntimeError(f"the client {client} was not admitted: {result.failed}")
-        admitted.touch(now)
-        return admitted
+            try:
+                if isinstance(held, Session):
+                    _ = await self.assembly.evict(key)  # idle past what this deployment keeps
+                    continue
+                result = await self.assembly.admit(Declaration(Session, instance=client))
+            except KeyInTransitError:
+                await asyncio.sleep(0)
+                continue
+            admitted = self.assembly.instance(key)
+            if not isinstance(admitted, Session):
+                raise RuntimeError(f"the client {client} was not admitted: {result.failed}")
+            admitted.touch(now)
+            return admitted
 
     async def bye(self, client: str) -> bool:
         """Withdraw what the client held; whether there was anything to withdraw."""
