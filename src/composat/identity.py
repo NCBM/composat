@@ -7,7 +7,7 @@ by the key.
 The identity is the class's own path, so a reload keeps the text and replaces the class object: the
 unit is stable, this generation of it is replaceable. A class defined inside a function carries
 ``<locals>`` in its path — stable across generations, and reachable by neither the loader nor a
-reload, which is worth documenting rather than refusing.
+reload.
 """
 
 from __future__ import annotations
