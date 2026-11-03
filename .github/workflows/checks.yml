@@ -20,9 +20,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Installing is part of the run. ``pytest``'s ``pythonpath = ["src"]`` reaches the test
-      # process only, and one dispatch test spawns a child interpreter that imports a module by
-      # name — that child needs ``composat`` installed to find it.
+      # The dev group is what CI needs installed: it brings the four gates' tools. Nothing here
+      # depends on the package being installed as well — ``pytest`` reaches ``src`` through its own
+      # ``pythonpath``, and ``basedpyright`` reads a ``src`` layout on its own.
       - name: Install the project and its dev group
         run: pdm install -G dev
 
