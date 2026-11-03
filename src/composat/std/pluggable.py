@@ -19,6 +19,12 @@ Three things the component deliberately does not do:
 * **it does not watch anything.** Which modules moved is :meth:`UnitLoader.stale`; when it is worth
   acting on that is the application's loop, because it is a decision about time.
 
+It hands nothing across a generation, either. A reload replaces the *classes*; the module's globals are
+built again, so a cache, a pool or a ``dict`` that lived there is new and empty. What has to survive
+belongs outside the module, restored where a component prepares itself: ``load`` is the one place an
+instance is prepared, and a second half-state carried over from the generation before it would be a
+second beginning.
+
 It also installs no import hook, and that is a boundary worth stating where its cost is. The entry
 file is read by :mod:`composat.loader`, which compiles the text it just read, so a ``.pyc`` cannot
 serve an older entry; a package's submodules go through the ordinary machinery, so for *them* a cache
