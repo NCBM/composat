@@ -5,8 +5,10 @@ rest stands on — identities and keys, effect scopes, the component base and wh
 state machine and the manager that drives it, the dependency graph, the registry of declarations,
 and the assembly: the table of what is up, the rule a requirement is answered by, the batch verbs
 that fill the table and empty it, the report they hand back, and the stream of moves they report
-while they run. The loader lands on top of these; see ``archive/pre-rewrite`` for the design they
-are being rebuilt from.
+while they run. On top of those sits the loader, which turns a path into the module there and the
+components it exports, and answers what that module's source looks like now. What turns a loaded
+module into a running generation is ``composat.std.pluggable``, the component that owns the decision;
+see ``archive/pre-rewrite`` for the design all of this is rebuilt from.
 """
 
 from . import context as context
@@ -33,6 +35,12 @@ from .errors import UnboundRequirementError as UnboundRequirementError
 from .errors import UnboundServiceError as UnboundServiceError
 from .identity import ComponentIdentity as ComponentIdentity
 from .identity import ComponentKey as ComponentKey
+from .loader import LoadedUnit as LoadedUnit
+from .loader import Unit as Unit
+from .loader import fingerprint_of as fingerprint_of
+from .loader import load_unit as load_unit
+from .loader import load_units as load_units
+from .loader import loaded_unit as loaded_unit
 from .manager import ComponentManager as ComponentManager
 from .registry import ComponentRegistry as ComponentRegistry
 from .registry import Declaration as Declaration
