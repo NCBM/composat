@@ -24,8 +24,54 @@ def plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+@pytest.fixture
+def packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A drop-in that is a package: its entry is one file, and the class it holds is two levels down."""
+    root = tmp_path / "packaged"
+    _ = shutil.copytree(HERE / "nested", root)
+    on_the_path(monkeypatch, root)
+    return root
+
+
 def rewrite(path: Path, source: str) -> None:
     _ = path.write_text(source, encoding="utf-8")
+
+
+_GENERATION = """
+from __future__ import annotations
+
+from typing import override
+
+from composat import Component
+
+
+class {name}(Component):
+    version = {version}
+
+    seen: list[str]
+
+    def __init__(self, seen: list[str]) -> None:
+        super().__init__()
+        self.seen = seen
+
+    @override
+    async def load(self) -> None:
+        self.seen.append(f"load {{self.version}}")
+
+    @override
+    async def unload(self) -> None:
+        self.seen.append(f"unload {{self.version}}")
+"""
+
+
+def generation(name: str, version: int) -> str:
+    """One generation of a drop-in, as the text an edit writes: what it is, and what it says up and down.
+
+    Written out because an edit *is* text — the loader reads the file — and generated because a burst
+    of edits differs only in the version. Its hooks report into a list the caller owns, which is how a
+    case counts generations without reading anything the framework keeps.
+    """
+    return _GENERATION.format(name=name, version=version)
 
 
 WIDGET_V2 = """
@@ -110,6 +156,7 @@ def test_an_edit_that_does_not_compile_leaves_the_running_generation(plugins: Pa
 
     run(main())
 
+
 def test_a_class_the_edit_added_is_declared_and_a_removed_one_withdrawn(plugins: Path) -> None:
     async def main() -> None:
         loader = UnitLoader(plugins)
@@ -128,5 +175,38 @@ def test_a_class_the_edit_added_is_declared_and_a_removed_one_withdrawn(plugins:
         assert [key.identity.qualname for key in removed.withdrawn.completed] == ["Gadget"]
         held = assembly.keys()
         assert {key.identity.qualname for key in held} == {"Widget"}
+
+    run(main())
+
+
+def test_a_packaged_dropin_is_one_component_however_many_names_its_entry_gives_it(packaged: Path) -> None:
+    async def main() -> None:
+        seen: list[str] = []
+        loader = UnitLoader(packaged)
+        await loader.load()
+        unit = loader.unit("plug")
+        assert unit is not None
+        registry = ComponentRegistry()
+        assembly = Assembly(registry, up={})
+
+        declarations = [Declaration(cls, args=(seen,)) for cls in unit.components]
+        _ = registry.declare_all(declarations)
+        _ = await assembly.start(*[declaration.key for declaration in declarations])
+
+        # One class however many names the entry gives it: one declaration, one key, one instance.
+        held = assembly.keys()
+        assert [str(key.identity) for key in held] == ["plug.component.Gear"]
+        assert seen == ["load 1"]
+
+        # An edit below the entry is an edit to the unit, and the entry's own re-import is what carries
+        # it: what answers afterwards is the class the submodule holds now, and the old one let go.
+        rewrite(packaged / "plug/component.py", generation("Gear", 2))
+        assert loader.stale() == ("plug",)
+        result = await rebuild(loader, assembly, "plug")
+
+        assert [key.identity.qualname for key in result.swap.swapped] == ["Gear"]
+        assert seen == ["load 1", "load 2", "unload 1"]
+        held = assembly.keys()
+        assert [str(key.identity) for key in held] == ["plug.component.Gear"]
 
     run(main())

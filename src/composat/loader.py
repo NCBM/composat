@@ -308,18 +308,23 @@ def components_of(module: ModuleType) -> tuple[type[Component], ...]:
     be declared at two keys, and refusing that would be refusing a deployment shape the assembly
     already supports; a caller that wants exactly one says so where the manifest is written.
 
+    One class is one entry, however many names the namespace gives it: an entry that re-exports a
+    class from below *and* names, in a second binding, which of them the deployment runs by default
+    holds one class twice. Reporting it twice would have a manifest declare one key twice and build
+    two instances of one component, so the second name is the same answer rather than a second one.
+
     The module is the argument rather than the unit, because a module is what a caller has: a
     generation that has been superseded is still a module object with classes in it, and asking it
     what it holds is how a reload compares the two.
     """
     name = module.__name__
     members: dict[str, object] = vars(module)
-    found: list[type[Component]] = []
+    found: dict[type[Component], None] = {}
     for value in members.values():
         if not isinstance(value, type) or not issubclass(value, Component):
             continue
         if value.__module__ == name or value.__module__.startswith(f"{name}."):
-            found.append(value)
+            found[value] = None
     return tuple(found)
 
 
