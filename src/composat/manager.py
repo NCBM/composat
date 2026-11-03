@@ -7,8 +7,7 @@ refused where it asked (:class:`~composat.errors.LifecycleReentryError`), becaus
 inside the critical section of the component it would be moving.
 
 The unit of work is a :class:`~composat.state.Migration` — a target rather than a verb — so bringing
-an instance to a level is one call and the verbs fall out of the machine's tables. Only one move runs
-on an instance at a time, and every step of it commits its arrival before the hook runs.
+an instance to a level is one call and the verbs fall out of the machine's tables.
 """
 
 from __future__ import annotations
@@ -87,8 +86,7 @@ class ComponentManager:
 
     Two verbs, because a target is the whole of what a caller knows: bring this instance to a level,
     or rebuild what it holds. One of them is a migration and the other is not — a reload has
-    preconditions and no arrival — and between them they cover the nine verbs the old tree wrote by
-    hand.
+    preconditions and no arrival.
 
     Which components move, and in what order, is not here. Ordering is the registry's, the decision to
     move is the assembly's, and doing either from here would put a second plan next to the first.
@@ -111,9 +109,6 @@ class ComponentManager:
         are nobody's to find later. A cancelled move is the one case left open — releasing an epoch
         means awaiting a release, and awaiting while being cancelled would not finish — so the epoch
         of a cancelled ``load`` is released by whatever holds the instance next.
-
-        The instance's state is read here, inside the lock, so a move always starts from where the
-        instance actually is.
         """
         move = f"migrate to {to.name}"
         async with _guard(component, move), component.state.transaction(move) as advance:
