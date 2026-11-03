@@ -126,6 +126,18 @@ class TestRemoving:
             graph.remove("ghost")
 
 
+class TestReadingEitherEndOfAnEdge:
+    def test_dependents_is_what_the_removal_refuses_on(self) -> None:
+        graph = diamond()
+
+        assert graph.dependents("store") == frozenset({"api", "worker"})
+        assert graph.dependents("app") == frozenset()
+
+    def test_dependents_of_an_unknown_node_is_a_key_error(self) -> None:
+        with pytest.raises(KeyError):
+            _ = diamond().dependents("ghost")
+
+
 class TestOrdering:
     def test_a_diamond_puts_the_shared_node_first_and_the_root_last(self) -> None:
         order = diamond().order()

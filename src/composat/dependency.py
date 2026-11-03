@@ -119,6 +119,16 @@ class DependencyGraph[Node: Hashable]:
         self._require_declared(node)
         return frozenset(self._dependencies[node])
 
+    def dependents(self, node: Node) -> frozenset[Node]:
+        """What needs ``node`` — the same edges read from their other end.
+
+        ``remove`` answers this question internally and refuses on the answer, so a caller that has
+        to know *before* it commits — a batch of removals that is only valid as a whole — reads it
+        here rather than learning it one node at a time.
+        """
+        self._require_declared(node)
+        return frozenset(self._dependents[node])
+
     def order(self) -> tuple[Node, ...]:
         """Loading order: dependencies first."""
         adjacency = {node: set(dependencies) for node, dependencies in self._dependencies.items()}
