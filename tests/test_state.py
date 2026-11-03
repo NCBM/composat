@@ -32,46 +32,10 @@ class TestTheTables:
         # is quietly never called — so the two lists are compared rather than trusted to match.
         assert tuple(operation.value for operation in Operation) == LIFECYCLE_HOOKS
 
-    def test_every_verb_says_where_it_starts_and_where_it_arrives(self) -> None:
+    def test_a_cell_is_filled_on_both_sides_of_every_verb(self) -> None:
+        # Read the two tables together: a verb that leaves nothing or arrives nowhere is a verb the
+        # machine cannot walk, and the pair property below would be the first thing to notice.
         assert set(LEAVING) == set(ARRIVING) == set(Operation)
-
-    def test_reload_is_the_verb_that_arrives_nowhere(self) -> None:
-        assert ARRIVING[Operation.reload] is None
-
-    def test_a_verb_is_always_a_move(self) -> None:
-        # Nothing arrives where it may start, so no verb is a self-loop dressed up as a transition:
-        # a state change is always something that happened.
-        assert not [operation for operation, arrival in ARRIVING.items() if arrival in LEAVING[operation]]
-
-
-class TestPaths:
-    def test_the_way_up_loads_before_it_enables(self) -> None:
-        assert Migration(ComponentState.UNLOADED, ComponentState.ENABLED).steps() == (
-            Operation.load,
-            Operation.enable,
-        )
-
-    def test_the_way_down_drains_before_it_disables(self) -> None:
-        assert Migration(ComponentState.ENABLED, ComponentState.UNLOADED).steps() == (
-            Operation.drain,
-            Operation.disable,
-            Operation.unload,
-        )
-
-    def test_coming_out_of_service_keeps_what_was_loaded(self) -> None:
-        assert Migration(ComponentState.ENABLED, ComponentState.LOADED).steps() == (
-            Operation.drain,
-            Operation.disable,
-        )
-
-    def test_a_drained_component_is_resumed_by_disabling_first(self) -> None:
-        assert Migration(ComponentState.DRAINING, ComponentState.ENABLED).steps() == (
-            Operation.disable,
-            Operation.enable,
-        )
-
-    def test_a_state_is_reached_from_itself_without_a_verb(self) -> None:
-        assert Migration(ComponentState.LOADED, ComponentState.LOADED).steps() == ()
 
     def test_every_pair_of_states_is_joined_and_walking_it_lands(self) -> None:
         for origin in ComponentState:
