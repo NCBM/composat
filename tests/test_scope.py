@@ -214,6 +214,48 @@ class TestTimedEffects:
 
         run(scenario())
 
+    def test_nothing_a_closed_scope_was_holding_runs_afterwards(self) -> None:
+        ran: list[str] = []
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            _ = scope.after(0, lambda: ran.append("ran"))
+            assert not scope.closed
+            await scope.dispose()  # closed before the timer got its turn
+            assert scope.closed
+            await asyncio.sleep(0.01)
+
+        run(scenario())
+
+        assert ran == []
+
+    def test_an_awaitable_effect_is_taken_down_with_the_scope(self) -> None:
+        started: list[str] = []
+        ended: list[str] = []
+
+        async def expire() -> None:
+            started.append("started")
+            try:
+                await asyncio.sleep(10)
+            finally:
+                ended.append("over")
+
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            _ = scope.after(0, expire)
+            for _ in range(3):  # the timer lands, then the task it started
+                await asyncio.sleep(0)
+            assert started == ["started"]
+            await scope.dispose()
+            for _ in range(3):  # and the cancellation lands
+                await asyncio.sleep(0)
+            # The work of a timed effect is the scope's, not a task that outlives it: it is over here,
+            # before the loop this ran on is gone.
+            assert ended == ["over"]
+
+        run(scenario())
+
     def test_a_failure_goes_to_the_loop_handler(self) -> None:
         seen: list[str] = []
         scope = EffectScope()

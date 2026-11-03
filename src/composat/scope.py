@@ -57,15 +57,36 @@ def name_of(effect: Disposable) -> str:
     return type(target).__qualname__
 
 
-def _fire(loop: asyncio.AbstractEventLoop, effect: Disposable) -> None:
-    """Run one timed effect, and report whatever it raises where a background failure belongs."""
+def _fire(loop: asyncio.AbstractEventLoop, scope: EffectScope, effect: Disposable) -> None:
+    """Run one timed effect, and take the work it leaves behind into the scope that asked for it.
+
+    A scope that closed before the timer landed runs nothing: what this scope promises is that its
+    effects are over when it is, and starting one into a closed scope is the single way it would not
+    be. That is not only the timer's cancellation doing the work — a timer due in the same turn as the
+    disposal lands here first, and starting its work then would fail on the registration below and
+    leave a task nobody owns.
+
+    An awaitable effect is awaited on a task of its own, which is registered here like any other
+    effect: the scope cancels it on the way out, and a drain can wait for it, instead of the work
+    outliving the instance that asked for it.
+    """
+    if scope.closed:
+        return
     try:
         result = effect()
     except Exception as error:  # noqa: BLE001 - nobody is waiting for this effect's answer
         _report(loop, effect, error)
         return
-    if inspect.isawaitable(result):
-        _ = loop.create_task(_settle(loop, effect, result))
+    if not inspect.isawaitable(result):
+        return
+    task = loop.create_task(_settle(loop, effect, result))
+
+    def cancel() -> None:
+        """Call the effect off: the scope is going, and this may not outlive it."""
+        _ = task.cancel()
+
+    cancel.__name__ = name_of(effect)
+    _ = scope.put(cancel)
 
 
 async def _settle(loop: asyncio.AbstractEventLoop, effect: Disposable, awaiting: Awaitable[object]) -> None:
@@ -97,6 +118,11 @@ class EffectScope:
 
     def __len__(self) -> int:
         return len(self._stack)
+
+    @property
+    def closed(self) -> bool:
+        """Whether this scope has stopped taking effects: what a timer landing late has to ask."""
+        return self._closed
 
     def effects(self) -> tuple[str, ...]:
         """The name of every effect this scope still holds, oldest first.
@@ -152,7 +178,10 @@ class EffectScope:
         It fires on the loop running now, which is the loop the scope's effects belong to, and nobody
         is waiting for it when it does: a failure has no caller to raise to, so it goes to the loop's
         exception handler, named by :func:`name_of`. An awaitable effect is awaited on a task of its
-        own, which makes an ``async def`` expiry as ordinary as a plain function.
+        own, which makes an ``async def`` expiry as ordinary as a plain function — and that task is
+        registered here like anything else, so the scope cancels it on the way out rather than leaving
+        work behind that outlived the instance. A scope that closed before the timer landed runs
+        nothing at all.
 
         The registration stays in :meth:`effects` after it fires — the scope still holds it, and
         releasing it then is a no-op — so the view says what *may* still happen rather than what has.
@@ -168,7 +197,7 @@ class EffectScope:
         preempt.__name__ = name_of(effect)
         # Registered first, so a closed scope refuses the effect before anything is scheduled.
         revoke = self.put(preempt)
-        timer = loop.call_later(delay, partial(_fire, loop, effect))
+        timer = loop.call_later(delay, partial(_fire, loop, self, effect))
         return revoke
 
     async def dispose(self) -> None:
