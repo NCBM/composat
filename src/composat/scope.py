@@ -5,6 +5,10 @@ scope that promises to call it exactly once, last-registered first. Closing the 
 everything it still holds; a :class:`Revoke` releases everything registered after a checkpoint and
 leaves what came before.
 
+A *timed* effect is the same promise the other way round: :meth:`EffectScope.after` registers what
+should happen later, so the scope can take it back — a session that expires in ten minutes is a
+registration that a disconnect cancels, not a timer a caller has to remember.
+
 The scope also owns an epoch's ends: :meth:`EffectScope.dispose` closes it for good and
 :meth:`EffectScope.reopen` answers the scope a new epoch starts with.
 """
@@ -51,6 +55,35 @@ def name_of(effect: Disposable) -> str:
     if isinstance(name, str) and name:
         return name
     return type(target).__qualname__
+
+
+def _fire(loop: asyncio.AbstractEventLoop, effect: Disposable) -> None:
+    """Run one timed effect, and report whatever it raises where a background failure belongs."""
+    try:
+        result = effect()
+    except Exception as error:  # noqa: BLE001 - nobody is waiting for this effect's answer
+        _report(loop, effect, error)
+        return
+    if inspect.isawaitable(result):
+        _ = loop.create_task(_settle(loop, effect, result))
+
+
+async def _settle(loop: asyncio.AbstractEventLoop, effect: Disposable, awaiting: Awaitable[object]) -> None:
+    """Wait for an awaitable timed effect, and report its failure the same way."""
+    try:
+        await awaiting
+    except Exception as error:  # noqa: BLE001 - same
+        _report(loop, effect, error)
+
+
+def _report(loop: asyncio.AbstractEventLoop, effect: Disposable, error: BaseException) -> None:
+    """Hand a timed effect's failure to the loop, which is where a call nobody awaits reports.
+
+    The alternative is a task nobody retrieves, whose exception surfaces whenever it is collected — at
+    a time and a place that have nothing to do with the effect. Naming it is what makes the report say
+    which of a deployment's timers failed.
+    """
+    loop.call_exception_handler({"message": f"a timed effect ({name_of(effect)}) failed", "exception": error})
 
 
 @dataclass(eq=False, slots=True)
@@ -104,6 +137,37 @@ class EffectScope:
             _revoked = True
             await self._recycle_until(checkpoint)
 
+        return revoke
+
+    def after(self, delay: float, effect: Disposable) -> Revoke:
+        """Register ``effect`` to run once, ``delay`` seconds from now, unless this scope goes first.
+
+        A timed effect is an ordinary registration: what goes on the stack is the timer's cancellation,
+        so the scope's own bookkeeping stays the whole story — ``revoke`` pre-empts it, :meth:`dispose`
+        cancels it along with everything else, and a scope that is already closed refuses it. That is
+        what a session expiry or a timeout needs, and what a bare ``loop.call_later`` leaves the caller
+        to remember.
+
+        It fires on the loop running now, which is the loop the scope's effects belong to, and nobody
+        is waiting for it when it does: a failure has no caller to raise to, so it goes to the loop's
+        exception handler, named by :func:`name_of`. An awaitable effect is awaited on a task of its
+        own, which makes an ``async def`` expiry as ordinary as a plain function.
+
+        The registration stays in :meth:`effects` after it fires — the scope still holds it, and
+        releasing it then is a no-op — so the view says what *may* still happen rather than what has.
+        """
+        loop = asyncio.get_running_loop()
+        timer: asyncio.TimerHandle | None = None
+
+        def preempt() -> None:
+            """Call the timer off: this effect is not going to run."""
+            if timer is not None:
+                timer.cancel()
+
+        preempt.__name__ = name_of(effect)
+        # Registered first, so a closed scope refuses the effect before anything is scheduled.
+        revoke = self.put(preempt)
+        timer = loop.call_later(delay, partial(_fire, loop, effect))
         return revoke
 
     async def dispose(self) -> None:

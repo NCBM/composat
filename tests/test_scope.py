@@ -143,3 +143,101 @@ class TestReopening:
 
         assert first is not second
         assert scope.dead
+
+
+class TestTimedEffects:
+    def test_an_effect_runs_once_after_its_delay(self) -> None:
+        ran: list[str] = []
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            _ = scope.after(0, lambda: ran.append("ran"))
+            await asyncio.sleep(0.01)
+
+        run(scenario())
+
+        assert ran == ["ran"]
+
+    def test_an_awaitable_effect_is_awaited(self) -> None:
+        ran: list[str] = []
+        scope = EffectScope()
+
+        async def expire() -> None:
+            await asyncio.sleep(0)
+            ran.append("expired")
+
+        async def scenario() -> None:
+            _ = scope.after(0, expire)
+            await asyncio.sleep(0.02)
+
+        run(scenario())
+
+        assert ran == ["expired"]
+
+    def test_it_is_named_in_the_view(self) -> None:
+        def expire() -> None:
+            pass
+
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            _ = scope.after(1, expire)
+
+        run(scenario())
+
+        assert scope.effects() == ("expire",)
+
+    def test_a_cleared_scope_never_runs_it(self) -> None:
+        ran: list[str] = []
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            _ = scope.after(0.05, lambda: ran.append("ran"))
+            await scope.dispose()
+            await asyncio.sleep(0.06)
+
+        run(scenario())
+
+        assert ran == []
+
+    def test_a_revoked_segment_never_runs_it(self) -> None:
+        ran: list[str] = []
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            revoke = scope.after(0.05, lambda: ran.append("ran"))
+            await revoke()
+            await asyncio.sleep(0.06)
+
+        run(scenario())
+
+        assert ran == []
+
+    def test_a_closed_scope_refuses_a_timer(self) -> None:
+        scope = EffectScope()
+
+        async def scenario() -> None:
+            await scope.dispose()
+            with pytest.raises(RuntimeError, match="closed"):
+                _ = scope.after(1, lambda: None)
+
+        run(scenario())
+
+    def test_a_failure_goes_to_the_loop_handler(self) -> None:
+        seen: list[str] = []
+        scope = EffectScope()
+
+        def boom() -> None:
+            raise ValueError("boom")
+
+        def handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+            seen.append(str(context["message"]))
+
+        async def scenario() -> None:
+            asyncio.get_running_loop().set_exception_handler(handler)
+            _ = scope.after(0, boom)
+            await asyncio.sleep(0.01)
+
+        run(scenario())
+
+        assert seen == ["a timed effect (boom) failed"]
