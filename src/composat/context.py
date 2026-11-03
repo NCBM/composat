@@ -19,6 +19,12 @@ after the release, not before.
 **Asking outside a call is a fact about the program.** It is a :class:`NoCallContextError` rather than
 the ``LookupError`` a bare ``ContextVar.get()`` would raise: the two are different mistakes, and a
 reader should be able to tell them apart at a glance.
+
+**What the call asked for, it asks once.** A resolve is remembered on the call, so the rule builds a
+per-request object once however many layers ask for it, and the release it registered happens once.
+That memory is the call's and dies with it — a *snapshot* is only wrong when it outlives the work it
+was taken for, and a call is that work. A field read is not answered from it: a component reading what
+it declares is reading its own address, which stays live, because that is what a replacement moves.
 """
 
 from __future__ import annotations
@@ -58,7 +64,7 @@ requirement a field would be declared with, which is what a field read already i
 @final
 @dataclass(eq=False, slots=True)
 class CallContext:
-    """One call: the key it is made for, the rule it resolves by, and the effects it registers.
+    """One call: the key it is made for, the rule it resolves by, what it has asked, and its effects.
 
     Handed out by :func:`open_call`, and reachable from underneath through :func:`current`, which is
     what lets ordinary application code take part in the call its component is serving.
@@ -67,17 +73,24 @@ class CallContext:
     key: ComponentKey
     rule: Rule
     effects: EffectScope = field(default_factory=EffectScope)
+    _remembered: dict[type[object], object] = field(default_factory=dict, init=False)
 
     def resolve[T](self, contract: type[T], /) -> T:
-        """The instance answering ``contract`` for this call, looked up afresh on every read.
+        """The instance answering ``contract`` for this call: asked once, and one answer for the call.
 
-        The rule decides what that means; this adds nothing to it. In particular a resolve is not
-        remembered: two resolves in one call build two, unless the rule keeps what it made — and a
-        rule that wants one per call has the scope to keep it in, registering the release and the
-        forgetting together. Caching here would be a snapshot, and a snapshot of what a key answers is
-        exactly what a replacement makes wrong.
+        What the rule made is kept here, so a second ask — by the component, by plain code deeper
+        down, by anything that can reach :func:`current` — is answered with the same object, and the
+        release the rule registered happens once. That is the whole of what "one unit of work" means
+        to a call: a rule that builds something per request has nowhere else to keep it, since the
+        scope it is handed registers releases and remembers nothing.
+
+        The memory is the call's and dies with it, which is the difference between a snapshot and a
+        wrong answer: a call lasts as long as the work it wraps, while a cached key outlives the
+        generation it was read from.
         """
-        return cast("T", self.rule(self.key, RequirementSpec(_AT_THE_CALL, contract), self.effects))
+        if contract not in self._remembered:
+            self._remembered[contract] = self.rule(self.key, RequirementSpec(_AT_THE_CALL, contract), self.effects)
+        return cast("T", self._remembered[contract])
 
     def put(self, effect: Disposable, /) -> Revoke:
         """Register ``effect`` in this call's scope; it is recycled when the call ends, last first."""

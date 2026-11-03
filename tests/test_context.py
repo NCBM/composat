@@ -60,6 +60,19 @@ class Recorder:
         return self.answer
 
 
+class Builder:
+    """A rule that answers something new every time, so an identity is what a case can observe."""
+
+    def __init__(self) -> None:
+        self.made: list[object] = []
+
+    def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
+        _ = (key, requirement, effects)
+        made = object()
+        self.made.append(made)
+        return made
+
+
 class TestWhatIsBound:
     def test_a_call_is_readable_from_underneath(self) -> None:
         rule = Recorder()
@@ -142,6 +155,76 @@ class TestResolving:
                 assert current().key == at(Store, "a")
 
         run(drive())
+
+
+class TestWhatTheCallRemembers:
+    """A contract the call asked for is asked once, so a unit of work is one object however deep."""
+
+    def test_a_contract_asked_twice_is_answered_once(self) -> None:
+        rule = Builder()
+
+        async def drive() -> None:
+            async with open_call(at(Store), rule):
+                first = resolve(Store)
+                assert resolve(Store) is first
+                assert current().resolve(Store) is first
+
+        run(drive())
+
+        assert len(rule.made) == 1
+
+    def test_two_contracts_are_two_answers(self) -> None:
+        rule = Builder()
+
+        async def drive() -> None:
+            async with open_call(at(Store), rule):
+                assert resolve(Store) is not resolve(Cache)
+
+        run(drive())
+
+        assert len(rule.made) == 2
+
+    def test_a_nested_call_starts_with_nothing_remembered(self) -> None:
+        rule = Builder()
+
+        async def drive() -> None:
+            async with open_call(at(Store, "a"), rule):
+                outer = resolve(Store)
+                async with open_call(at(Cache, "a"), rule):
+                    assert resolve(Store) is not outer
+                assert resolve(Store) is outer
+
+        run(drive())
+
+        assert len(rule.made) == 2
+
+    def test_the_next_call_starts_with_nothing_remembered(self) -> None:
+        rule = Builder()
+
+        async def drive() -> None:
+            for _ in range(2):
+                async with open_call(at(Store), rule):
+                    _ = resolve(Store)
+
+        run(drive())
+
+        assert len(rule.made) == 2
+
+    def test_a_field_read_is_not_answered_from_the_memory(self) -> None:
+        rule = Builder()
+        reader = Reader()
+        attach(reader, at(Reader), rule)
+
+        async def drive() -> None:
+            async with open_call(at(Reader), rule):
+                _ = resolve(Store)
+                _ = reader.store
+
+        run(drive())
+
+        # A field read answers at the instance's own address and stays live: the call's memory is for
+        # what the call asked, not for what the component declared.
+        assert len(rule.made) == 2
 
 
 class TestWhatBelongsToTheCall:
