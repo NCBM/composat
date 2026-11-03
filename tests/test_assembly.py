@@ -26,6 +26,7 @@ from composat import (
     Declaration,
     EffectScope,
     Event,
+    KeyInTransitError,
     Operation,
     Replacement,
     RequirementResolver,
@@ -153,6 +154,53 @@ class Detaching(Component):
 
     async def unload(self) -> None:
         Detaching.last = self.store
+
+
+class Held(Component):
+    """A component whose ``load`` waits on a gate, so a case can hold a key mid-build."""
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+    built: ClassVar[int] = 0
+
+    def __init__(self) -> None:
+        super().__init__()
+        Held.built += 1
+
+    async def load(self) -> None:
+        Held.entered.set()
+        await Held.opening.wait()
+
+
+class Lingering(Component):
+    """The same, one step later: a teardown a case can hold halfway down."""
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+
+    async def unload(self) -> None:
+        Lingering.entered.set()
+        await Lingering.opening.wait()
+
+
+class Shy(Component):
+    """The same at ``enable``, which is the step a re-level is made of."""
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+
+    async def enable(self) -> None:
+        Shy.entered.set()
+        await Shy.opening.wait()
+
+
+def fresh_gates() -> None:
+    """A pair of gates per case: ``entered`` is what the case waits on, ``opening`` what it opens."""
+
+    for gated in (Held, Lingering, Shy):
+        gated.entered = asyncio.Event()
+        gated.opening = asyncio.Event()
+    Held.built = 0
 
 
 async def refusing_load(self: Component) -> None:
@@ -1018,3 +1066,148 @@ class TestWhatIsReported:
         run(ComponentManager().migrate(instance, ComponentState.LOADED))
 
         assert seen == []
+
+
+class TestOneWriterPerKey:
+    def test_a_key_a_batch_is_still_building_is_not_built_by_another(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held), Declaration(Store)))
+            building = asyncio.create_task(assembly.start(at(Held), at(Store)))
+            await Held.entered.wait()
+
+            with pytest.raises(KeyInTransitError) as raised:
+                _ = await assembly.start(at(Store))
+
+            assert raised.value.key == at(Store)
+            assert raised.value.moving == "being brought up"
+            Held.opening.set()
+            _ = await building
+            assert Held.built == 1
+            assert assembly.keys() == (at(Held), at(Store))
+
+        run(scenario())
+
+    def test_a_key_a_batch_is_still_building_is_not_taken_down(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held)))
+            building = asyncio.create_task(assembly.start(at(Held)))
+            await Held.entered.wait()
+
+            # The instance is in the table by now — it has to be, or its own ``load`` could not read
+            # it — so without the claim this would take a key down from under the move producing it.
+            with pytest.raises(KeyInTransitError):
+                _ = await assembly.stop(at(Held))
+
+            Held.opening.set()
+            _ = await building
+            assert assembly.instance(at(Held)) is not None
+
+        run(scenario())
+
+    def test_a_key_still_being_taken_down_is_not_brought_up_again(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Lingering)))
+            _ = await assembly.start(at(Lingering))
+            leaving = asyncio.create_task(assembly.stop(at(Lingering)))
+            await Lingering.entered.wait()
+
+            # The key stopped answering before the teardown began, so a second build would find the
+            # table saying "nothing is up" and put a generation next to the one still unloading.
+            with pytest.raises(KeyInTransitError) as raised:
+                _ = await assembly.start(at(Lingering))
+
+            assert raised.value.moving == "being taken down"
+            Lingering.opening.set()
+            _ = await leaving
+            assert assembly.keys() == ()
+
+        run(scenario())
+
+    def test_a_key_a_re_level_is_moving_is_not_moved_by_another(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Shy)))
+            _ = await assembly.start(at(Shy), enable=False)
+            publishing = asyncio.create_task(assembly.enable(at(Shy)))
+            await Shy.entered.wait()
+
+            with pytest.raises(KeyInTransitError) as raised:
+                _ = await assembly.migrate(at(Shy), to=ComponentState.LOADED)
+
+            assert raised.value.moving == "being moved to ENABLED"
+            Shy.opening.set()
+            _ = await publishing
+            assert state_of(assembly, at(Shy)) is ComponentState.ENABLED
+
+        run(scenario())
+
+    def test_a_key_being_replaced_is_not_taken_down(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Lingering)))
+            _ = await assembly.start(at(Lingering))
+            swapping = asyncio.create_task(assembly.replace(at(Lingering), Declaration(generation("Lingering"))))
+            await Lingering.entered.wait()
+
+            with pytest.raises(KeyInTransitError) as raised:
+                _ = await assembly.stop(at(Lingering))
+
+            assert raised.value.moving == "being replaced"
+            Lingering.opening.set()
+            swapped = await swapping
+            assert isinstance(swapped, Component)
+            assert assembly.instance(at(Lingering)) is swapped
+
+        run(scenario())
+
+    def test_one_key_moving_does_not_hold_up_another(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held), Declaration(Store)))
+            building = asyncio.create_task(assembly.start(at(Held)))
+            await Held.entered.wait()
+
+            # The claim is per key, so a tenant sharing nothing with the one being built is served:
+            # the wait is bounded here because a lock over the whole surface would hang instead.
+            result = await asyncio.wait_for(assembly.start(at(Store)), timeout=1)
+
+            assert result.ok
+            assert state_of(assembly, at(Store)) is ComponentState.ENABLED
+            Held.opening.set()
+            _ = await building
+
+        run(scenario())
+
+    def test_a_refused_batch_takes_none_of_the_keys_it_named(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held), Declaration(Store), Declaration(Lingering)))
+            building = asyncio.create_task(assembly.start(at(Held), at(Store)))
+            await Held.entered.wait()
+
+            with pytest.raises(KeyInTransitError):
+                _ = await assembly.start(at(Store), at(Lingering))
+
+            # Half a claim would be worse than none: the refused call is gone, and the key it alone
+            # named has to be free for the next one.
+            assert (await assembly.start(at(Lingering))).ok
+            Held.opening.set()
+            _ = await building
+
+        run(scenario())
+
+    def test_a_key_that_finished_moving_can_be_asked_for_again(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Store)))
+
+            _ = await assembly.start(at(Store))
+            _ = await assembly.stop(at(Store))
+            result = await assembly.start(at(Store))
+
+            assert result.completed == (at(Store),)
+
+        run(scenario())

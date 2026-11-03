@@ -38,6 +38,16 @@ already up: all three are refused as exceptions, because they are facts about th
 component failing on its own, and half a batch already up with nothing to report it would be the
 worst of both readings.
 
+**A key in transit is spoken for.** A batch speaks for the keys it names from the moment it accepts
+them until the last of them is done, and for the keys it derived on the way, because those are the
+same promise. Without that, two calls both read "not up" and both build: a key taken down and built
+again while its first generation is still unloading, a second generation left behind by whoever wrote
+the table last. The claim is one region with no ``await`` in it, which is what makes it a claim — the
+event loop already refuses to interleave two such regions — so nothing here is locked, and tenants
+that have nothing to do with each other go on running side by side. A second call is refused rather
+than queued (:class:`~composat.errors.KeyInTransitError`): a key has one writer, and the caller that
+still holds the intent is the one that can say which of the two it meant.
+
 The rule is a function of the table rather than a method of the thing that fills it
 (:func:`default_rule`), and that is a reading rather than a style. A requirement is answered from
 whatever is up *now*, so the rule has to see the table as it fills; taking the table as its argument
@@ -63,7 +73,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from .component import Component, RequirementResolver, attach
-from .errors import ServiceNotUpError
+from .errors import KeyInTransitError, ServiceNotUpError
 from .identity import ComponentIdentity, ComponentKey
 from .manager import ComponentManager
 from .registry import ComponentRegistry, Declaration
@@ -265,6 +275,7 @@ class Assembly:
     _registry: ComponentRegistry
     _manager: ComponentManager
     _up: dict[ComponentKey, Component]
+    _moving: dict[ComponentKey, str]
     _rule: RequirementResolver
     _subscribers: list[Observer]
 
@@ -287,6 +298,7 @@ class Assembly:
         self._registry = registry
         self._manager = ComponentManager() if manager is None else manager
         self._up = {} if up is None else up
+        self._moving = {}
         self._rule = default_rule(registry, self._up) if rule is None else rule
         self._subscribers = []
 
@@ -359,33 +371,17 @@ class Assembly:
         Events are delivered per key, as each one finishes coming up, so a batch that is still running
         is already readable. On the two paths that raise there is no result to carry a handler's
         failure, and it goes the way of the exception.
+
+        The keys are spoken for before the first instance exists and until the last of them is done,
+        the ones this call derived included: a second call that would build one of them is refused
+        rather than racing this one (:class:`~composat.errors.KeyInTransitError`).
         """
         batch = _in_order(self._closed(self._require_startable(keys)), self._registry.order())
-        completed: list[ComponentKey] = []
-        failed: dict[ComponentKey, BaseException] = {}
-        watched: list[tuple[Event, BaseException]] = []
-        with self._staging() as staged:
-            try:
-                for key in batch:
-                    try:
-                        await self._bring_up(key, enable=enable)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as error:
-                        # One component's failure is the batch's business, not the call's: it is
-                        # reported and the rest are still brought up.
-                        failed[key] = error
-                        if strict:
-                            raise
-                    else:
-                        completed.append(key)
-                    finally:
-                        watched.extend(self._deliver(staged))
-            except (asyncio.CancelledError, Exception):
-                await self._retract_all(completed)
-                _ = self._deliver(staged)
-                raise
-        return AssemblyResult(tuple(completed), failed, tuple(watched))
+        self._claim(batch, "being brought up")
+        try:
+            return await self._bring_up_each(batch, enable=enable, strict=strict)
+        finally:
+            self._release(batch)
 
     async def stop(self, *keys: ComponentKey) -> AssemblyResult:
         """Take ``keys`` back down, the instances that need them going first.
@@ -398,21 +394,16 @@ class Assembly:
 
         Events are delivered per key, as each one finishes going down, so a shutdown that is still
         running is already readable.
+
+        A key another call is still moving is refused rather than passed over
+        (:class:`~composat.errors.KeyInTransitError`): it is not "nothing is up" — a batch is building
+        it, and tearing it down halfway is the one thing the claim exists to prevent.
         """
-        completed: list[ComponentKey] = []
-        failed: dict[ComponentKey, BaseException] = {}
-        watched: list[tuple[Event, BaseException]] = []
-        with self._staging() as staged:
-            for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
-                try:
-                    error = await self._retract(key)
-                finally:
-                    watched.extend(self._deliver(staged))
-                if error is None:
-                    completed.append(key)
-                else:
-                    failed[key] = error
-        return AssemblyResult(tuple(completed), failed, tuple(watched))
+        self._claim(keys, "being taken down")
+        try:
+            return await self._take_down_each(keys)
+        finally:
+            self._release(keys)
 
     async def migrate(self, *keys: ComponentKey, to: ComponentState) -> AssemblyResult:
         """Move ``keys`` to the level ``to`` and report what each of them did.
@@ -439,29 +430,17 @@ class Assembly:
         some true level of its own, and it is reported and left there while the rest are still moved.
 
         Events arrive per key, as each one finishes moving, so a re-level is visible in a running
-        ledger with no second mechanism.
+        ledger with no second mechanism. A key another call is moving is refused rather than moved
+        twice, the direction being part of what the caller is told.
         """
         if to not in HELD:
             raise ValueError(f"{to.name} is not a level a held instance is at: that is stop()")
         batch = _in_order(self._require_held(keys), self._order_for(to))
-        completed: list[ComponentKey] = []
-        failed: dict[ComponentKey, BaseException] = {}
-        watched: list[tuple[Event, BaseException]] = []
-        with self._staging() as staged:
-            for key in batch:
-                try:
-                    await self._manager.migrate(self._up[key], to)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:  # noqa: BLE001 - a key that would not move is reported, not raised
-                    # A key that would not move is at some true level of its own, and the rest of
-                    # the batch is still the caller's instruction.
-                    failed[key] = error
-                else:
-                    completed.append(key)
-                finally:
-                    watched.extend(self._deliver(staged))
-        return AssemblyResult(tuple(completed), failed, tuple(watched))
+        self._claim(batch, f"being moved to {to.name}")
+        try:
+            return await self._move_each(batch, to)
+        finally:
+            self._release(batch)
 
     async def enable(self, *keys: ComponentKey) -> AssemblyResult:
         """Put ``keys`` into service: the batch ``migrate(*keys, to=ComponentState.ENABLED)`` names.
@@ -522,11 +501,22 @@ class Assembly:
         last of all. ``event.instance`` is what tells the two apart, so a ledger sees the hand-over
         instead of a gap, and a handler that only wants the current answer asks the table
         (``instance(key) is event.instance``).
+
+        The key is spoken for from before the registry is touched until the swap is done, so a stop
+        or a batch that named it waits its turn rather than finding it half replaced.
         """
         if key not in self._up:
             raise ValueError(f"nothing is up under {key}")
         if declaration.key != key:
             raise ValueError(f"{declaration.key} cannot take over {key}")
+        self._claim((key,), "being replaced")
+        try:
+            return await self._swap(key, declaration)
+        finally:
+            self._release((key,))
+
+    async def _swap(self, key: ComponentKey, declaration: Declaration) -> Component | Replacement:
+        """The swap itself, the key already spoken for: declaration, generation, publication."""
         superseded = self._registry.declaration(key)
         self._registry.redeclare(declaration)
         old = self._up[key]
@@ -566,6 +556,42 @@ class Assembly:
         if not failed and published is None and not watched:
             return instance
         return Replacement(instance, failed, published, tuple(watched))
+
+    def _require_idle(self, keys: Iterable[ComponentKey]) -> None:
+        """Refuse a batch that names a key another call is already moving; claim nothing.
+
+        The question without the claim is what a verb asks before it changes anything it would have to
+        undo: an admission declares first, and a key it cannot have should not have left a declaration
+        behind.
+        """
+        for key in keys:
+            moving = self._moving.get(key)
+            if moving is not None:
+                raise KeyInTransitError(key, moving)
+
+    def _claim(self, keys: Iterable[ComponentKey], what: str) -> None:
+        """Speak for ``keys`` until :meth:`_release`, so no second call moves one of them.
+
+        Checked as a set before any of it is written, so a batch refused for one key takes none of
+        them — half a claim would be worse than none, since the refused call leaves no way to find out
+        which half. Both loops are one region with no ``await`` in it, which is the whole mechanism:
+        the event loop does not interleave two such regions, so what one call reads another cannot
+        have changed. A lock would buy the same thing at the price of serializing tenants that share
+        nothing, and it would have to be reentrancy-guarded, because a hook runs inside the batch that
+        is holding it.
+
+        ``what`` is the phrase a refused caller is told, and it is the verb's own: "being brought up"
+        and "being taken down" are different answers to "can I wait for it".
+        """
+        claimed = tuple(keys)
+        self._require_idle(claimed)
+        for key in claimed:
+            self._moving[key] = what
+
+    def _release(self, keys: Iterable[ComponentKey]) -> None:
+        """Give up the claim on ``keys``; a key nobody holds is not an error, so this runs in ``finally``."""
+        for key in keys:
+            _ = self._moving.pop(key, None)
 
     @contextlib.contextmanager
     def _staging(self) -> Generator[list[Event], None, None]:
@@ -744,6 +770,78 @@ class Assembly:
     def _order_for(self, to: ComponentState) -> tuple[ComponentIdentity, ...]:
         """The order a batch is walked in to arrive at ``to``: requirements first when coming up."""
         return self._registry.order() if to is ComponentState.ENABLED else self._registry.reverse_order()
+
+    async def _bring_up_each(
+        self,
+        batch: tuple[ComponentKey, ...],
+        *,
+        enable: bool,
+        strict: bool,
+    ) -> AssemblyResult:
+        """Walk ``batch`` requirements first, reporting each key as it finishes coming up."""
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            try:
+                for key in batch:
+                    try:
+                        await self._bring_up(key, enable=enable)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        # One component's failure is the batch's business, not the call's: it is
+                        # reported and the rest are still brought up.
+                        failed[key] = error
+                        if strict:
+                            raise
+                    else:
+                        completed.append(key)
+                    finally:
+                        watched.extend(self._deliver(staged))
+            except (asyncio.CancelledError, Exception):
+                await self._retract_all(completed)
+                _ = self._deliver(staged)
+                raise
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
+
+    async def _take_down_each(self, keys: Iterable[ComponentKey]) -> AssemblyResult:
+        """Walk ``keys`` dependants first, reporting each as it finishes going down."""
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
+                try:
+                    error = await self._retract(key)
+                finally:
+                    watched.extend(self._deliver(staged))
+                if error is None:
+                    completed.append(key)
+                else:
+                    failed[key] = error
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
+
+    async def _move_each(self, batch: tuple[ComponentKey, ...], to: ComponentState) -> AssemblyResult:
+        """Walk ``batch`` in the direction ``to`` gives it, reporting each key as it settles."""
+        completed: list[ComponentKey] = []
+        failed: dict[ComponentKey, BaseException] = {}
+        watched: list[tuple[Event, BaseException]] = []
+        with self._staging() as staged:
+            for key in batch:
+                try:
+                    await self._manager.migrate(self._up[key], to)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - a key that would not move is reported, not raised
+                    # A key that would not move is at some true level of its own, and the rest of
+                    # the batch is still the caller's instruction.
+                    failed[key] = error
+                else:
+                    completed.append(key)
+                finally:
+                    watched.extend(self._deliver(staged))
+        return AssemblyResult(tuple(completed), failed, tuple(watched))
 
     async def _bring_up(self, key: ComponentKey, *, enable: bool) -> None:
         """Build one instance, point its requirements at ``key``, and drive it to the level asked for.

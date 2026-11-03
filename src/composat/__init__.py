@@ -25,6 +25,7 @@ from .dependency import DependencyCycleError as DependencyCycleError
 from .dependency import DependencyError as DependencyError
 from .dependency import DependencyGraph as DependencyGraph
 from .dependency import DependencyInUseError as DependencyInUseError
+from .errors import KeyInTransitError as KeyInTransitError
 from .errors import LifecycleReentryError as LifecycleReentryError
 from .errors import NoCallContextError as NoCallContextError
 from .errors import ServiceNotUpError as ServiceNotUpError

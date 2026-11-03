@@ -120,3 +120,27 @@ class LifecycleReentryError(RuntimeError):
         self.component = component
         self.operation = operation
         self.current = current
+
+
+class KeyInTransitError(RuntimeError):
+    """Another call already has ``key``: it is being brought up, taken down, moved or replaced.
+
+    A batch speaks for the keys it names from the moment it accepts them until the last of them is
+    done, and for the keys it had to derive along the way, because those are the same promise. A
+    second call that names one of them is refused here rather than queued: two callers that disagree
+    about whether a tenant should be serving would otherwise be settled by whichever happened to be
+    scheduled second, and the one that is still holding the intent is the one that can say which it
+    meant.
+
+    ``moving`` is what the call that holds the key is doing, in the words its verb uses — "being
+    brought up", "being taken down", "being moved to ENABLED", "being replaced" — because that is
+    what says whether waiting on the other call is even the shape of the answer.
+    """
+
+    key: ComponentKey
+    moving: str
+
+    def __init__(self, key: ComponentKey, moving: str) -> None:
+        super().__init__(f"{key} is {moving} by another call")
+        self.key = key
+        self.moving = moving
