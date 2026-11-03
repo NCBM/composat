@@ -24,7 +24,9 @@ from composat import (
     RequirementSpec,
     ServiceNotUpError,
     UnboundServiceError,
+    open_call,
     require,
+    resolve,
 )
 from composat.std.root import answering_from_the_root
 
@@ -136,3 +138,45 @@ class TestAnsweringFromTheRoot:
     def test_an_interface_nothing_answers_for_is_refused_where_the_rule_is_built(self) -> None:
         with pytest.raises(UnboundServiceError):
             _ = answering_from_the_root(ComponentRegistry(), {}, only={Contract})
+
+
+class TestNestedCalls:
+    """A call opened inside another asks from its own key, so a session inside a tenant is reachable.
+
+    This is the only shape the one-hop rule leaves for a context nested under another: no requirement
+    of a tenant's component is answered at a client's qualifier, and a call is what moves the reading.
+    """
+
+    def test_a_call_opened_inside_one_moves_what_is_read_from(self) -> None:
+        shared, acme, client = Store(), Store(), Store()
+        instances = {at(Store): shared, at(Store, "acme"): acme, at(Store, "acme/client"): client}
+        rule = answering_from_the_root(ComponentRegistry(), instances, only={Store})
+
+        async def main() -> list[Store]:
+            seen: list[Store] = []
+            async with open_call(at(Engine, "acme"), rule):
+                seen.append(resolve(Store))
+                async with open_call(at(Engine, "acme/client"), rule):
+                    seen.append(resolve(Store))
+                seen.append(resolve(Store))
+            return seen
+
+        # The tenant answers the request, the client answers the session, and the tenant answers
+        # again once the inner call is over.
+        assert run(main()) == [acme, client, acme]
+
+    def test_a_reader_below_the_tenant_does_not_climb_to_it(self) -> None:
+        instances = {at(Store, "acme"): Store()}
+        rule = answering_from_the_root(ComponentRegistry(), instances, only={Store})
+
+        async def main() -> None:
+            async with open_call(at(Engine, "acme/client"), rule):
+                _ = resolve(Store)
+
+        with pytest.raises(ServiceNotUpError) as raised:
+            run(main())
+
+        # Two places are looked at, and the tenant above the caller is neither of them: the caller's
+        # own qualifier, then the root.
+        assert raised.value.key == at(Store, "acme/client")
+        assert raised.value.asked_from == at(Engine, "acme/client")
