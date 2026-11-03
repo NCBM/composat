@@ -44,7 +44,7 @@ class Recorder:
     """A rule that answers with what it was given, and remembers how it was asked."""
 
     def __init__(self, answer: object = None) -> None:
-        self.answer = answer
+        self.answer: object = answer
         self.asked: list[tuple[ComponentKey, RequirementSpec, object]] = []
 
     def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:

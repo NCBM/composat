@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from typing import override
 
 import pytest
 
@@ -33,7 +34,7 @@ class Recorder(Component):
         super().__init__()
         self.seen: list[str] = []
         self.states: list[ComponentState] = []
-        self.failing = frozenset(failing)
+        self.failing: frozenset[str] = frozenset(failing)
 
     async def _note(self, hook: str) -> None:
         self.seen.append(hook)
@@ -41,21 +42,27 @@ class Recorder(Component):
         if hook in self.failing:
             raise RuntimeError(f"{hook} refused")
 
+    @override
     async def load(self) -> None:
         await self._note("load")
 
+    @override
     async def unload(self) -> None:
         await self._note("unload")
 
+    @override
     async def reload(self) -> None:
         await self._note("reload")
 
+    @override
     async def enable(self) -> None:
         await self._note("enable")
 
+    @override
     async def disable(self) -> None:
         await self._note("disable")
 
+    @override
     async def drain(self) -> None:
         await self._note("drain")
 
@@ -65,8 +72,9 @@ class Reentering(Component):
 
     def __init__(self, manager: ComponentManager) -> None:
         super().__init__()
-        self.manager = manager
+        self.manager: ComponentManager = manager
 
+    @override
     async def load(self) -> None:
         await self.manager.migrate(self, ComponentState.ENABLED)
 
@@ -136,6 +144,7 @@ class TestTheMove:
         pending: list[str | None] = []
 
         class Watching(Recorder):
+            @override
             async def load(self) -> None:
                 pending.append(self.state.pending)
                 await super().load()

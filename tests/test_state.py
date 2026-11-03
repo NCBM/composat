@@ -7,6 +7,10 @@ three promises a move makes: the state a hook runs in, the verb a hook that rais
 the record each committed move hands to whoever is watching.
 """
 
+# ``asyncio.Event.wait()`` is typed ``Literal[True]``, and a case that waits for a gate is not asking
+# for the answer: the rule is off for this file rather than a row of ``_ =`` a reader walks past.
+# pyright: reportUnusedCallResult=false
+
 from __future__ import annotations
 
 import asyncio
@@ -255,7 +259,7 @@ class TestWhatIsReported:
         control = ComponentStateControl()
         seen: list[tuple[bool, str | None]] = []
 
-        def watch(move: Committed) -> None:
+        def watch(_move: Committed) -> None:
             seen.append((control.lock.locked(), control.pending))
 
         _ = control.observe(watch)

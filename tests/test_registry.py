@@ -33,7 +33,7 @@ class Dsn(Component):
 
     def __init__(self, dsn: str = "memory") -> None:
         super().__init__()
-        self.dsn = dsn
+        self.dsn: str = dsn
 
 
 class Engine(Component):
@@ -155,7 +155,7 @@ class TestDeclaring:
         registry = ComponentRegistry()
 
         with pytest.raises(KeyError):
-            registry.declaration(ComponentKey(STORAGE))
+            _ = registry.declaration(ComponentKey(STORAGE))
 
     def test_nothing_declared_is_a_plan_with_nothing_in_it(self) -> None:
         registry = ComponentRegistry()

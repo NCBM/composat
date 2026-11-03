@@ -8,15 +8,20 @@ lives: closing is not clearing, and a new epoch is a new scope.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable
 
 import pytest
 
 from composat import EffectScope
 
 
-def run[T](coro: Coroutine[object, object, T], /) -> T:
-    return asyncio.run(coro)
+def run[T](awaitable: Awaitable[T], /) -> T:
+    return asyncio.run(_awaited(awaitable))
+
+
+async def _awaited[T](awaitable: Awaitable[T]) -> T:
+    """``asyncio.run`` wants a coroutine; a revoke is only promised to be awaitable."""
+    return await awaitable
 
 
 class TestRegistration:

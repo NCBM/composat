@@ -4,11 +4,14 @@ The case worth testing is the one the wait exists for — a swap whose old gener
 torn down — so these hold the teardown open rather than hope the window is wide enough to be seen.
 """
 
+# A case here waits on gates and reads a handle; both answer values the wait is not asking for.
+# pyright: reportUnusedCallResult=false
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
-from typing import ClassVar
+from typing import ClassVar, override
 
 import pytest
 
@@ -62,6 +65,7 @@ class Slow(Component):
         cls.reached = asyncio.Event()
         cls.gate = asyncio.Event()
 
+    @override
     async def unload(self) -> None:
         Slow.reached.set()
         await Slow.gate.wait()

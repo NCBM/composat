@@ -7,11 +7,15 @@ a call covers, the order they come up in, and what a key that fails leaves behin
 hands out while it does any of it; so that is what its own cases are about.
 """
 
+# ``asyncio.Event.wait()`` is typed ``Literal[True]``, and a case that waits for a gate is not asking
+# for the answer: the rule is off for this file rather than twenty ``_ =`` lines a reader walks past.
+# pyright: reportUnusedCallResult=false
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, override
 
 import pytest
 
@@ -70,6 +74,7 @@ class Wired(Component):
     store: Store = require()
     read: Store | None = None
 
+    @override
     async def load(self) -> None:
         self.read = self.store
 
@@ -79,6 +84,7 @@ class Wobbly(Component):
 
     released: ClassVar[list[str]] = []
 
+    @override
     async def load(self) -> None:
         _ = self.effect_scope.put(lambda: Wobbly.released.append("released"))
         raise RuntimeError("load refused")
@@ -87,6 +93,7 @@ class Wobbly(Component):
 class Sticky(Component):
     """A component that will not let go."""
 
+    @override
     async def unload(self) -> None:
         raise RuntimeError("unload refused")
 
@@ -94,6 +101,7 @@ class Sticky(Component):
 class Quitter(Component):
     """A component whose hook is cancelled before it comes back."""
 
+    @override
     async def load(self) -> None:
         raise asyncio.CancelledError
 
@@ -107,6 +115,7 @@ class Watching(Component):
         super().__init__()
         self.told: list[RequirementSpec] = []
 
+    @override
     async def provider_changed(self, requirement: RequirementSpec) -> None:
         self.told.append(requirement)
 
@@ -114,6 +123,7 @@ class Watching(Component):
 class Objecting(Watching):
     """A dependant for whom being told is itself a failure."""
 
+    @override
     async def provider_changed(self, requirement: RequirementSpec) -> None:
         raise RuntimeError("not now")
 
@@ -125,6 +135,7 @@ class Steady(Component):
 class Bashful(Component):
     """A component that will not be put into service."""
 
+    @override
     async def enable(self) -> None:
         await refusing_enable(self)
 
@@ -139,10 +150,12 @@ class Announced(Component):
     live: ClassVar[list[Component]] = []
     peak: ClassVar[int] = 0
 
+    @override
     async def enable(self) -> None:
         Announced.live.append(self)
         Announced.peak = max(Announced.peak, len(Announced.live))
 
+    @override
     async def disable(self) -> None:
         Announced.live.remove(self)
 
@@ -153,6 +166,7 @@ class Detaching(Component):
     store: Store = require()
     last: Store | None = None
 
+    @override
     async def unload(self) -> None:
         Detaching.last = self.store
 
@@ -168,6 +182,7 @@ class Held(Component):
         super().__init__()
         Held.built += 1
 
+    @override
     async def load(self) -> None:
         Held.entered.set()
         await Held.opening.wait()
@@ -179,6 +194,7 @@ class Lingering(Component):
     entered: ClassVar[asyncio.Event] = asyncio.Event()
     opening: ClassVar[asyncio.Event] = asyncio.Event()
 
+    @override
     async def unload(self) -> None:
         Lingering.entered.set()
         await Lingering.opening.wait()
@@ -190,6 +206,7 @@ class Shy(Component):
     entered: ClassVar[asyncio.Event] = asyncio.Event()
     opening: ClassVar[asyncio.Event] = asyncio.Event()
 
+    @override
     async def enable(self) -> None:
         Shy.entered.set()
         await Shy.opening.wait()
@@ -204,12 +221,12 @@ def fresh_gates() -> None:
     Held.built = 0
 
 
-async def refusing_load(self: Component) -> None:
+async def refusing_load(_self: Component) -> None:
     """A lifecycle hook that refuses, for a generation written up as a class dict."""
     raise RuntimeError("load refused")
 
 
-async def refusing_enable(self: Component) -> None:
+async def refusing_enable(_self: Component) -> None:
     """The same, one step later: the generation is built and will not be put into service."""
     raise RuntimeError("enable refused")
 
@@ -395,7 +412,7 @@ class TestAssembly:
 
     def test_what_is_up_comes_back_in_the_order_it_came_up(self) -> None:
         store, engine = Store(), Engine()
-        instances = {at(Store, "tenant-a"): store, at(Engine, "tenant-a"): engine}
+        instances: dict[ComponentKey, Component] = {at(Store, "tenant-a"): store, at(Engine, "tenant-a"): engine}
         assembly = Assembly(ComponentRegistry(), up=instances)
 
         assert assembly.keys() == tuple(instances)
@@ -1156,7 +1173,7 @@ class TestWhatIsReported:
         assembly = Assembly(declaring(Declaration(Store)))
         seen: list[Event] = []
 
-        def complaining(event: Event) -> None:
+        def complaining(_event: Event) -> None:
             raise RuntimeError("cannot write it down")
 
         _ = assembly.observe(complaining)
@@ -1173,7 +1190,7 @@ class TestWhatIsReported:
         assembly = Assembly(declaring(Declaration(Store)))
         _ = run(assembly.start(at(Store)))
 
-        def complaining(event: Event) -> None:
+        def complaining(_event: Event) -> None:
             raise RuntimeError("cannot write it down")
 
         _ = assembly.observe(complaining)

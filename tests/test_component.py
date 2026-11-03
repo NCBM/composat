@@ -7,7 +7,7 @@ framework decides what to look at.
 
 from __future__ import annotations
 
-from typing import Annotated, Protocol
+from typing import Annotated, Protocol, override
 
 import pytest
 
@@ -34,8 +34,10 @@ class Redis:
 class Reader(Component):
     store: Store = require()
     cache: CacheService = require()
-    resource: Redis
-    notes: list[str]
+    # Annotated and never assigned: the point of them is that an annotation on its own is an ordinary
+    # attribute, so what a case reads here is the classification rather than a value.
+    resource: Redis  # pyright: ignore[reportUninitializedInstanceVariable]
+    notes: list[str]  # pyright: ignore[reportUninitializedInstanceVariable]
 
 
 MARKER = object()
@@ -48,7 +50,7 @@ class Tagged(Component):
 class Named(Component):
     """A requirement whose contract is written at the declaration site, with no annotation."""
 
-    store = require(Store)
+    store = require(Store)  # pyright: ignore[reportUnannotatedClassAttribute]
 
 
 class TestClassification:
@@ -62,7 +64,7 @@ class TestClassification:
         # The annotation names a protocol, which used to be the whole of the declaration. It is not
         # one now: what the class body marks is a requirement, and this one marked nothing.
         class Unmarked(Component):
-            cache: CacheService
+            cache: CacheService  # pyright: ignore[reportUninitializedInstanceVariable]
 
         assert Unmarked.requirements() == ()
 
@@ -105,16 +107,16 @@ class TestClassification:
 class TestAMuddledMarker:
     def test_a_contract_the_annotation_disagrees_with_is_refused(self) -> None:
         def declares() -> None:
-            class Contradicting(Reader):
-                store: CacheService = require(Store)  # type: ignore[assignment]
+            class Contradicting(Reader):  # pyright: ignore[reportUnusedClass]
+                store: CacheService = require(Store)  # pyright: ignore[reportIncompatibleVariableOverride, reportAssignmentType]
 
         with pytest.raises(ValueError, match=r"declared for Store and annotated CacheService"):
             declares()
 
     def test_a_marker_over_something_that_is_not_a_contract_is_refused(self) -> None:
         def declares() -> None:
-            class MarkedList(Component):
-                notes: list[str] = require()  # type: ignore[assignment]
+            class MarkedList(Component):  # pyright: ignore[reportUnusedClass]
+                notes: list[str] = require()
 
         with pytest.raises(ValueError, match="notes is a requirement whose annotation names something"):
             declares()
@@ -162,7 +164,7 @@ class TestReadingARequirement:
 
     def test_a_member_named_like_the_read_path_does_not_take_it_over(self) -> None:
         class Loud(Reader):
-            def resolve(self, requirement: RequirementSpec) -> object:
+            def resolve(self, _requirement: RequirementSpec) -> object:
                 raise AssertionError("the read path is not dispatch on the component")
 
         store = Store()
@@ -183,13 +185,16 @@ class TestCapabilities:
 
     def test_a_component_that_writes_hooks_reports_them_in_a_fixed_order(self) -> None:
         class Full(Component):
+            @override
             async def unload(self) -> None: ...
+            @override
             async def load(self) -> None: ...
 
         assert Full.capabilities() == ("load", "unload")
 
     def test_a_base_that_writes_a_hook_is_inherited(self) -> None:
         class Base(Component):
+            @override
             async def unload(self) -> None: ...
 
         class Child(Base):
@@ -202,9 +207,11 @@ class TestCapabilities:
 
     def test_an_override_counts_once(self) -> None:
         class Base(Component):
+            @override
             async def unload(self) -> None: ...
 
         class Overriding(Base):
+            @override
             async def unload(self) -> None: ...
 
         assert Overriding.capabilities() == ("unload",)
@@ -227,7 +234,7 @@ class TestTheEpoch:
         import asyncio
 
         scope = EffectScope()
-        features = []
+        features: list[str] = []
 
         def release() -> None:
             features.append("released")
@@ -247,7 +254,7 @@ class TestLateDeclarations:
         class Late(Component):
             pass
 
-        Late.store = require()  # type: ignore[attr-defined]
+        Late.store = require()  # pyright: ignore[reportAttributeAccessIssue]
         with pytest.raises(ValueError, match=r"Late was handed store after it was made"):
             _ = Late.requirements()
 
@@ -255,13 +262,13 @@ class TestLateDeclarations:
         class Late(Component):
             pass
 
-        Late.store = require()  # type: ignore[attr-defined]
+        Late.store = require()  # pyright: ignore[reportAttributeAccessIssue]
         with pytest.raises(ValueError, match=r"Late was handed a requirement after it was made"):
-            _ = Late.store
+            _ = Late.store  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
 
     def test_an_unrelated_attribute_may_still_be_set_on_the_class(self) -> None:
         class Plain(Component):
             pass
 
-        Plain.helper = staticmethod(lambda: 1)  # type: ignore[attr-defined]
+        Plain.helper = staticmethod(lambda: 1)  # pyright: ignore[reportAttributeAccessIssue]
         assert Plain.capabilities() == ()
