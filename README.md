@@ -4,8 +4,7 @@ A component lifespan interface. Components declare what they need, an applicatio
 exists, and an assembly brings instances up and takes them down: it fills a table in dependency order,
 reports what happened, and keeps a key answering through a swap.
 
-Requires Python 3.12+. The tree is the package (`src/composat`). The implementation this one is being
-rebuilt from — with the design drafts it was written from — lives on `archive/pre-rewrite`.
+Requires Python 3.12+. The tree is the package (`src/composat`).
 
 ## A component
 
