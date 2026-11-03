@@ -1,4 +1,4 @@
-"""A request is a call: the body is written inside it, and the store it read is the deployment's."""
+"""Four lifetimes under one handler: the process, a tenant, a client, and the request itself."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import final
 
 import pytest
 
-from examples.http.app import Deployment, Message, Store, build
+from examples.http.app import Application, Message, Scope, Store, build
 from examples.support import run
 
 
@@ -37,10 +37,12 @@ def _bytes_of(value: object) -> bytes:
     return value if isinstance(value, bytes) else b""
 
 
-async def request(app: Deployment, body: bytes, store: Store) -> Conversation:
+async def post(app: Application, path: str, /, *, client: str = "", body: bytes = b"") -> Conversation:
     """One request, driven the way a server drives it: hand it the body, keep what it sent."""
     sent: list[Message] = []
     letting_go: list[int] = []
+    store = app.held()
+    headers: list[tuple[bytes, bytes]] = [] if not client else [(b"x-session", client.encode())]
 
     async def receive() -> Message:
         return {"type": "http.request", "body": body, "more_body": False}
@@ -49,11 +51,12 @@ async def request(app: Deployment, body: bytes, store: Store) -> Conversation:
         sent.append(message)
         letting_go.append(store.let_go)
 
-    await app({"type": "http", "method": "POST", "path": "/"}, receive, send)
+    scope: Scope = {"type": "http", "method": "POST", "path": path, "headers": headers}
+    await app(scope, receive, send)
     return Conversation(sent, letting_go)
 
 
-async def serve(app: Deployment, during: Callable[[], Awaitable[None]]) -> list[Message]:
+async def serve(app: Application, during: Callable[[], Awaitable[None]]) -> list[Message]:
     """Start the deployment, run ``during``, then stop it: the shape a server's lifespan gives."""
     sent: list[Message] = []
     inbox: asyncio.Queue[Message] = asyncio.Queue()
@@ -84,14 +87,15 @@ def test_the_call_outlives_the_body_it_is_writing() -> None:
         async def during() -> None:
             store = app.held()
             kept.append(store)
-            conversation = await request(app, b"hello world", store)
+            conversation = await post(app, "/acme", client="s1", body=b"hello world")
 
             assert conversation.status == 200
-            assert conversation.bodies() == [b"1:hello\n", b"2:world\n", b""]
+            assert conversation.bodies() == [b"acme:1/1:hello\n", b"acme:2/2:world\n", b""]
             # Every message went out while the cart was still held: the scope ends after the body, not
             # when the handler returned.
             assert conversation.letting_go == [0, 0, 0, 0]
             assert store.let_go == 1
+            # The tenant's shop counted into the process-wide store, which is the one line that crosses.
             assert store.written == 2
             # The flush started once the response was done, and is still running.
             assert store.flushed == 0
@@ -116,11 +120,14 @@ def test_two_requests_at_once_hold_two_carts_and_share_one_store() -> None:
 
         async def during() -> None:
             store = app.held()
-            first, second = await asyncio.gather(request(app, b"one", store), request(app, b"two three", store))
+            first, second = await asyncio.gather(
+                post(app, "/acme", client="s1", body=b"one"),
+                post(app, "/acme", client="s2", body=b"two three"),
+            )
 
-            # Each response counts its own rows, and both wrote to the one instance behind the store.
-            assert first.bodies() == [b"1:one\n", b""]
-            assert second.bodies() == [b"1:two\n", b"2:three\n", b""]
+            # Each client's basket counts its own rows, and both wrote to the one process-wide store.
+            assert first.bodies() == [b"acme:1/1:one\n", b""]
+            assert second.bodies() == [b"acme:1/1:two\n", b"acme:2/2:three\n", b""]
             assert [first.status, second.status] == [200, 200]
             assert store.written == 3
             assert store.let_go == 2
@@ -130,22 +137,74 @@ def test_two_requests_at_once_hold_two_carts_and_share_one_store() -> None:
     run(main())
 
 
-def test_a_request_that_cannot_be_answered_is_refused_before_the_body_starts() -> None:
+def test_one_handler_serves_every_tenant_from_its_own_instance() -> None:
     async def main() -> None:
         app = build()
 
         async def during() -> None:
             store = app.held()
-            refused = await request(app, b"   ", store)
+            acme = await post(app, "/acme", client="s1", body=b"a")
+            globex = await post(app, "/globex", client="s2", body=b"b")
+            nobody = await post(app, "/nobody", client="s3", body=b"c")
+
+            # The body says which instance answered: one handler, one path segment, one tenant each.
+            assert acme.bodies() == [b"acme:1/1:a\n", b""]
+            assert globex.bodies() == [b"globex:1/1:b\n", b""]
+            assert nobody.status == 404
+            assert nobody.bodies() == [b"no such tenant"]
+            # Two shops, one store: what is per tenant stays per tenant, what is shared stays shared.
+            assert store.written == 2
+
+        _ = await serve(app, during)
+
+    run(main())
+
+
+def test_a_session_lives_across_requests_until_it_is_gone() -> None:
+    async def main() -> None:
+        app = build()
+
+        async def during() -> None:
+            store = app.held()
+            first = await post(app, "/acme", client="s1", body=b"a")
+            again = await post(app, "/acme", client="s1", body=b"b")
+            other = await post(app, "/acme", client="s2", body=b"c")
+            bye = await post(app, "/acme/bye", client="s1")
+            after = await post(app, "/acme", client="s1", body=b"d")
+
+            # The basket is the client's: the same one across requests, its own for another client.
+            assert first.bodies() == [b"acme:1/1:a\n", b""]
+            assert again.bodies() == [b"acme:1/2:b\n", b""]
+            assert other.bodies() == [b"acme:1/1:c\n", b""]
+            # Saying goodbye withdraws it, and the next request starts the client over.
+            assert bye.status == 204
+            assert after.bodies() == [b"acme:1/1:d\n", b""]
+            # An idle session is replaced by the next request, on this deployment's rule, not the clock's.
+            app.clock = lambda: 10**6
+            idle = await post(app, "/acme", client="s2", body=b"e")
+            assert idle.bodies() == [b"acme:1/1:e\n", b""]
+            assert store.written == 5
+
+        _ = await serve(app, during)
+
+    run(main())
+
+
+def test_a_request_that_cannot_be_answered_is_refused_before_anything_is_opened() -> None:
+    async def main() -> None:
+        app = build()
+
+        async def during() -> None:
+            store = app.held()
+            refused = await post(app, "/acme", client="s1", body=b"   ")
 
             assert refused.status == 400
             assert refused.bodies() == [b"nothing to render"]
+            # Nothing was opened for a request that could not be answered: no cart, no client.
+            assert store.let_go == 0
             assert store.written == 0
-            # The call was released anyway, and no flush was started for a request that did no work.
+            assert len(app.assembly.keys()) == len(app.roots)
             assert refused.letting_go == [0, 0]
-            assert store.let_go == 1
-            assert store.flushed == 0
-            assert store.swept == 0
 
         _ = await serve(app, during)
 
@@ -171,8 +230,9 @@ def test_a_client_that_goes_away_mid_body_still_loses_nothing() -> None:
                     _ = task.cancel()
                     await asyncio.sleep(0)
 
+            scope: Scope = {"type": "http", "method": "POST", "path": "/acme", "headers": [(b"x-session", b"s1")]}
             with pytest.raises(asyncio.CancelledError):
-                await app({"type": "http", "method": "POST", "path": "/"}, receive, send)
+                await app(scope, receive, send)
 
             # The response never finished, and the cart was still given up: a teardown that has to be
             # remembered on the way out is the leak this scope exists to make impossible.

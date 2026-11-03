@@ -8,7 +8,7 @@ cases — `pdm run pytest` runs them alongside the unit cases in `tests/`.
 |---|---|
 | `host` | declare, start the roots, stop everything on the way out |
 | `calls` | one call per request: what it owns, and what plain code underneath reads |
-| `http` | an ASGI deployment: a request is a call, and the call lasts as long as the response |
+| `http` | an ASGI deployment: a request is a call, a client is a session, a tenant is a qualifier |
 | `tenants` | one instance per tenant, admitted and withdrawn while the process runs |
 | `replace` | one key swapped for a new generation: readers waiting it out, and a handle that follows its reader |
 | `reload` | edited modules: new code, new instances, classes that came and went, a burst of edits, a package drop-in |
