@@ -16,10 +16,9 @@ Three things it deliberately does not do:
   ``sys.path`` entry holds is a deployment problem, and the loader says so by name when it tries to
   load one (``ValueError``: not inside any sys.path entry).
 * **it does not install an import hook.** The entry file is read through the loader this module hands
-  importlib, so its own bytecode cache cannot serve an older reading; a package's submodules go
-  through the ordinary machinery and get no record of their own. A record per submodule — and with it
-  a ``stale()`` that sees an edit below a package's entry — is ``std/pluggable.py``'s to give, because
-  it is the component that claims a tree rather than one file.
+  importlib, so its own bytecode cache cannot serve an older reading. A record per submodule — and
+  with it a ``stale()`` that sees an edit below a package's entry — is ``composat.std.pluggable``'s
+  to give, because claiming a tree is a component's job rather than a loader's.
 * **it does not declare what it loads.** A module exports component classes; whether to declare them,
   at which qualifier, and whether to bring them up is the application's assembly. This module moves
   classes, not instances, which is what keeps a manifest from having to know anything about keys.
@@ -149,18 +148,15 @@ def load_unit(path: Path) -> Unit:
     what makes it reachable by the name an application's own modules would import it as.
 
     The same name loads once: a module already in the process is handed back rather than executed
-    again, because executing it again would run its import-time side effects a second time. What is
-    handed back describes the code that is *running* — the fingerprint it was executed with — rather
-    than the file that is on disk now, so an edit made since is :meth:`LoadedUnit.is_stale`'s to
-    report, and re-reading the source is not something this call does behind the caller's back.
+    again, because executing it again would run its import-time side effects a second time
+    (:func:`_reuse` decides whether it is the module this path names).
 
     Raises rather than returning a failure value, and adds no error type of its own: a path that is
-    absent is ``FileNotFoundError``, a module no ``sys.path`` entry holds is ``ValueError`` (the
-    application guarantees ``sys.path`` — this module never writes to it), and anything the module
-    raises while executing is passed through untouched, because its traceback is the most useful thing
-    anyone gets. A batch that has to tolerate one bad module is a ``try`` in the caller's loop —
-    whether one broken drop-in should stop the others is a policy about loading, and loading is the
-    caller's decision.
+    absent is ``FileNotFoundError``, a module no ``sys.path`` entry holds is ``ValueError``, and
+    anything the module raises while executing is passed through untouched, because its traceback is
+    the most useful thing anyone gets. A batch that has to tolerate one bad module is a ``try`` in the
+    caller's loop — whether one broken drop-in should stop the others is a policy about loading, and
+    loading is the caller's decision.
     """
     resolved = _entry_of(Path(path).resolve())
     name = _module_name_of(resolved)
@@ -220,8 +216,7 @@ def fingerprint_of(path: Path) -> str:
     application that wants a different hash writes its own function and reads the same file.
 
     Pure and stateless: it reads the file and returns, so asking twice about an edited module answers
-    differently. No history of answers is kept here — noticing that it changed is the caller's job, and
-    so is deciding what to do about it.
+    differently, and noticing that is the caller's.
     """
     entry = _entry_of(Path(path).resolve())
     text = entry.read_text(encoding="utf-8")
@@ -344,8 +339,7 @@ def _module_name_of(entry: Path) -> str:
     """The ordinary dotted name the path derives, or refuse because no ``sys.path`` entry holds it.
 
     This is the whole naming rule: a module is known by where it is, relative to a root the
-    application put on ``sys.path``. Which root is not this module's guess to make — ``sys.path`` is
-    the answer, and it is read, never written.
+    application put on ``sys.path``.
 
     Longest root first, so a root nested inside another wins for the module under it. A module
     *outside* every root is refused rather than given a name of its own: a name is a claim that
