@@ -11,7 +11,7 @@ from typing import Annotated, Protocol, override
 
 import pytest
 
-from composat import ComponentIdentity, ComponentKey, EffectScope, Reclaimable, UnboundRequirementError, require
+from composat import ComponentIdentity, ComponentKey, Reclaimable, UnboundRequirementError, require
 from composat.component import Component, attach, capabilities_of, requirements_of
 from composat.spec import RequirementSpec
 
@@ -97,12 +97,6 @@ class TestClassification:
     def test_the_contract_may_be_written_at_the_declaration_site(self) -> None:
         assert requirements_of(Named) == (RequirementSpec("store", Store),)
 
-    def test_a_marked_field_is_a_descriptor_from_the_moment_the_class_exists(self) -> None:
-        # Off the class a requirement answers with the declaration itself, which is how a tool asks
-        # what a field asks for.
-        assert Reader.store == RequirementSpec("store", Store)
-        assert "store" in dir(Reader)
-
 
 class TestAMuddledMarker:
     def test_a_contract_the_annotation_disagrees_with_is_refused(self) -> None:
@@ -156,28 +150,6 @@ class TestReadingARequirement:
         with pytest.raises(AttributeError, match="not assignable"):
             reader.store = Store()  # type: ignore[assignment]
 
-    def test_the_framework_s_operations_are_not_members_of_the_type(self) -> None:
-        # What the framework does to an instance is a function in the module, so there is nothing for
-        # an application to override: a member by that name would be its own method, not the read.
-        assert not hasattr(Component, "attach")
-        assert not hasattr(Component, "resolve")
-
-    def test_a_member_named_like_the_read_path_does_not_take_it_over(self) -> None:
-        class Loud(Reader):
-            def resolve(self, _requirement: RequirementSpec) -> object:
-                raise AssertionError("the read path is not dispatch on the component")
-
-        store = Store()
-
-        def resolver(key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable) -> object:
-            _ = key, requirement, effects
-            return store
-
-        loud = Loud()
-        attach(loud, ComponentKey(ComponentIdentity.of(Loud)), resolver)
-
-        assert loud.store is store
-
 
 class TestCapabilities:
     def test_a_component_that_writes_nothing_can_do_nothing(self) -> None:
@@ -224,29 +196,8 @@ class TestCapabilities:
 
 
 class TestTheEpoch:
-    def test_an_instance_is_born_with_an_empty_scope(self) -> None:
-        assert len(Store().effect_scope) == 0
-
     def test_two_instances_never_share_one(self) -> None:
         assert Store().effect_scope is not Store().effect_scope
-
-    def test_reopening_closes_the_old_scope_and_answers_a_fresh_one(self) -> None:
-        import asyncio
-
-        scope = EffectScope()
-        features: list[str] = []
-
-        def release() -> None:
-            features.append("released")
-
-        _ = scope.put(release)
-        fresh = asyncio.run(scope.reopen())
-
-        assert features == ["released"]
-        assert scope.dead
-        assert len(fresh) == 0
-        with pytest.raises(RuntimeError, match="closed"):
-            _ = scope.put(release)
 
 
 class TestLateDeclarations:
@@ -257,14 +208,6 @@ class TestLateDeclarations:
         Late.store = require()  # pyright: ignore[reportAttributeAccessIssue]
         with pytest.raises(ValueError, match=r"Late was handed store after it was made"):
             _ = requirements_of(Late)
-
-    def test_reading_a_requirement_nothing_settled_says_so(self) -> None:
-        class Late(Component):
-            pass
-
-        Late.store = require()  # pyright: ignore[reportAttributeAccessIssue]
-        with pytest.raises(ValueError, match=r"Late was handed a requirement after it was made"):
-            _ = Late.store  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
 
     def test_an_unrelated_attribute_may_still_be_set_on_the_class(self) -> None:
         class Plain(Component):

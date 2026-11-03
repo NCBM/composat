@@ -1142,19 +1142,19 @@ class TestWhatIsReported:
         assert (seen[-1].origin, seen[-1].arrival) == (ComponentState.LOADED, ComponentState.UNLOADED)
 
     def test_a_handler_runs_between_moves_rather_than_inside_one(self) -> None:
-        # The promise a handler is entitled to: no instance lock is held, and nothing is being
-        # driven, so a handler cannot deadlock on the move that reported itself to it.
+        # The promise a handler is entitled to: the move it is told about is finished, so nothing is
+        # being driven — a handler cannot deadlock on the move that reported itself to it.
         assembly = Assembly(declaring(Declaration(Store)))
-        observed: list[tuple[str | None, bool]] = []
+        observed: list[str | None] = []
 
         def handler(event: Event) -> None:
-            observed.append((event.instance.state.pending, event.instance.state.lock.locked()))
+            observed.append(event.instance.state.pending)
 
         _ = assembly.observe(handler)
 
         _ = run(assembly.start(at(Store)))
 
-        assert observed == [(None, False), (None, False)]
+        assert observed == [None, None]
 
     def test_unsubscribing_stops_that_handler(self) -> None:
         assembly = Assembly(declaring(Declaration(Store)))

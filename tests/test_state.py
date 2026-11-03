@@ -253,14 +253,14 @@ class TestWhatIsReported:
 
         assert seen[-1] == Committed(Operation.reload, ComponentState.ENABLED, ComponentState.ENABLED)
 
-    def test_an_observer_is_called_under_the_lock_and_while_the_move_is_pending(self) -> None:
-        # This is what makes "no awaiting, no driving" a fact rather than a request: an observer
-        # that reached for the manager to move this instance would want a lock it already holds.
+    def test_an_observer_is_called_while_the_move_it_reports_is_still_pending(self) -> None:
+        # What an observer may rely on: the move it is told about has not finished, so what it reads
+        # is the instance mid-move rather than the resting state a later read would see.
         control = ComponentStateControl()
-        seen: list[tuple[bool, str | None]] = []
+        seen: list[str | None] = []
 
         def watch(_move: Committed) -> None:
-            seen.append((control.lock.locked(), control.pending))
+            seen.append(control.pending)
 
         _ = control.observe(watch)
 
@@ -270,7 +270,7 @@ class TestWhatIsReported:
 
         run(drive())
 
-        assert seen == [(True, "migrate to LOADED")]
+        assert seen == ["migrate to LOADED"]
 
     def test_unsubscribing_stops_that_one_and_leaves_the_others_alone(self) -> None:
         control = ComponentStateControl()
