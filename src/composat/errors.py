@@ -1,8 +1,7 @@
 """Errors the framework layer raises on its own behalf.
 
-The errors whose semantics are settled live here as they land; the orphan error arrives with the
-assembly layer's ``replace``. The state machine's own refusal — a verb driven from a state it does not
-leave — lives with its tables, in :class:`composat.state.ComponentStateError`.
+The state machine's own refusal — a verb driven from a state it does not leave — lives with its
+tables, in :class:`composat.state.ComponentStateError`.
 """
 
 from .identity import ComponentKey
@@ -12,11 +11,10 @@ from .state import ComponentState
 class UnboundServiceError(RuntimeError):
     """A service type names no component, so the annotation can answer for nothing.
 
-    A component may ask for a service by the interface it is written against instead of by the
-    component class that provides it. Such an annotation names something once the registry has been
-    told who provides it, and the declaration that asks for it is where an empty mapping is refused:
-    answering with a default or dropping the annotation leaves a requirement missing with nobody the
-    wiser.
+    A component asks for a service by the interface it is written against, and such an annotation
+    names a provider only once the registry has been told who provides it: the declaration that asks
+    is where an empty mapping is refused. Answering with a default, or dropping the annotation, would
+    leave a requirement missing with nobody the wiser.
     """
 
     service: type[object]
@@ -27,19 +25,12 @@ class UnboundServiceError(RuntimeError):
 
 
 class ServiceNotUpError(RuntimeError):
-    """The instance a caller asked for is not one it may read: either absent or resting too low.
+    """The instance a caller asked for is not one it may read: absent, or resting too low.
 
-    A call is made for one key, and its services are looked up under that key: instances of one
-    identity are told apart by the qualifier, so a caller served by the instance at ``tenant-a`` is
-    answered from the provider at ``tenant-a`` as well. A miss there is the answer — another instance
-    of the provider belongs to another key, and answering with it would be answering a question the
-    caller did not ask.
-
-    Three facts, because a deployment reads them together: the key that was missed, who asked, and —
-    when the table does hold an instance there — the level it was resting at. "Nothing is up" and "it
-    is up and not serving" are different incidents with different answers, one being a declaration to
-    add and the other work still to finish; and the caller's own key is what says which tenant, or
-    which generation, was being served when the miss happened.
+    Services are looked up under the caller's own key, so another instance of the same provider
+    belongs to another key, and answering with it would answer a question the caller did not ask.
+    The three fields tell "nothing is up" from "it is up and not serving": the second is work still to
+    finish, and the first is a declaration to add.
     """
 
     key: ComponentKey
@@ -78,13 +69,11 @@ class UnboundRequirementError(RuntimeError):
     """A declared requirement was read before anything resolved it to an instance.
 
     A field marked with ``require()`` is a *requirement*: the type says the instance will be handed
-    one, so reading the field is as plain as reading any attribute. The assembly makes that true,
-    through ``composat.component.attach``, before ``load`` — an instance reading one of its own
-    requirements in a hook reads something already bound.
-
-    This error means the instance ran ahead of the binding: constructed and used by hand, or read from
-    a hook of something that went through no assembly. It is raised only for a name the type
-    declared, so probing an instance for anything else keeps Python's plain ``AttributeError``.
+    one, so reading the field is as plain as reading any attribute. ``composat.component.attach``
+    makes that true before ``load``. This error means the instance ran ahead of the binding —
+    constructed and used by hand, or read from a hook of something that went through no assembly —
+    and it is raised only for a name the type declared, so probing an instance for anything else keeps
+    Python's plain ``AttributeError``.
     """
 
     component: object
@@ -99,16 +88,14 @@ class UnboundRequirementError(RuntimeError):
 class LifecycleReentryError(RuntimeError):
     """A component asked to be driven while it was already being driven.
 
-    The verbs take the instance's lock for the whole move and are not reentrant, so a hook that drove
-    its own component would wait on a lock it is holding. The guard refuses the ask where it is made
-    instead of leaving a hung task behind, and what a component does instead of driving itself is
-    *declare* what it needs: the assembly brings requirements up in order, and a component never has
-    to.
+    The verbs hold the instance's lock for the whole move and are not reentrant, so a hook that drove
+    its own component would wait on a lock it is holding; the guard refuses the ask where it is made
+    instead of leaving a hung task behind. What a component does instead is *declare* what it needs:
+    the assembly brings requirements up in order, and a component never has to.
 
-    The guard follows the task that is running the hook, which catches the second half of the same
-    mistake — a task a hook starts inherits it, so coming back later to drive the manager is refused
-    as well — while an operation running in another task stays independent, as concurrent work on
-    other components must.
+    The guard follows the task running the hook, so a task a hook starts inherits it and coming back
+    later to drive the manager is refused as well, while an operation running in another task stays
+    independent, as concurrent work on other components must.
     """
 
     component: object
@@ -125,16 +112,12 @@ class LifecycleReentryError(RuntimeError):
 class KeyInTransitError(RuntimeError):
     """Another call already has ``key``: it is being brought up, taken down, moved or replaced.
 
-    A batch speaks for the keys it names from the moment it accepts them until the last of them is
-    done, and for the keys it had to derive along the way, because those are the same promise. A
-    second call that names one of them is refused here rather than queued: two callers that disagree
-    about whether a tenant should be serving would otherwise be settled by whichever happened to be
-    scheduled second, and the one that is still holding the intent is the one that can say which it
-    meant.
-
-    ``moving`` is what the call that holds the key is doing, in the words its verb uses — "being
-    brought up", "being taken down", "being moved to ENABLED", "being replaced" — because that is
-    what says whether waiting on the other call is even the shape of the answer.
+    A batch speaks for the keys it names, and for the ones it derived along the way, from the moment
+    it accepts them until the last of them is done; a second call naming one of them is refused rather
+    than queued, because two callers that disagree about whether a tenant should be serving would
+    otherwise be settled by whichever happened to be scheduled second. ``moving`` is what the holder
+    is doing, in the words its verb uses — "being brought up", "being moved to ENABLED" — because
+    that is what says whether waiting on the other call is even the shape of the answer.
     """
 
     key: ComponentKey
