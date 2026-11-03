@@ -438,6 +438,23 @@ class TestSwappingInstances:
             _ = run(loader.swap_instances(wired(), "gamma"))
 
 
+class TestAsADeclaredComponent:
+    def test_it_is_declared_like_any_other_and_loads_its_root(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        registry = ComponentRegistry()
+        _ = registry.declare_all((Declaration(UnitLoader, args=(dropins,)),))
+        assembly = Assembly(registry)
+        key = ComponentKey(ComponentIdentity.of(UnitLoader))
+
+        result = run(assembly.start(key))
+        loader = assembly.instance(key)
+
+        assert result.ok
+        assert isinstance(loader, UnitLoader)
+        assert loader.scope() == {"alpha"}
+        assert run(assembly.stop(*result.completed)).ok
+
+
 class TestStaleness:
     def test_an_edit_to_the_entry_is_reported(self, dropins: Path) -> None:
         path = module_at(dropins, "alpha.py", _ALPHA)
