@@ -22,6 +22,10 @@ class InFlight:
     Started work is registered here rather than with a bare ``create_task`` because two things have to
     be able to happen to it: this instance waits for it, and its epoch cancels it when nobody does.
 
+    ``scope`` is the instance's epoch scope, taken when the tracker is made. A scope that has been
+    closed takes no more effects, so a tracker is not carried across an ``unload``: the next epoch
+    gets a new one.
+
     A failure is not the drain's to report. A task that raises belongs to whoever started the work,
     and :meth:`drain` leaves it alone: it is collected by the loop, which is where a background
     failure has always gone in this tree (:meth:`~composat.EffectScope.after` says the same).
