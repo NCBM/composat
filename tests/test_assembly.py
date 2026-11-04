@@ -40,7 +40,7 @@ from composat import (
     UnboundServiceError,
     require,
 )
-from composat.assembly import default_rule
+from composat.assembly import answering_from, default_rule
 from composat.scope import Disposable, Revoke
 from composat.spec import RequirementSpec
 
@@ -276,6 +276,12 @@ def asking(service: type[object], name: str = "service") -> RequirementSpec:
     return RequirementSpec(name, service)
 
 
+def two_levels(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """A qualifier of ``account/endpoint``: the endpoint's own place first, then the account's."""
+    account, _, _endpoint = key.instance.partition("/")
+    return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
+
+
 def brought_up(component: Component, level: ComponentState = ComponentState.LOADED) -> Component:
     """``component`` driven to ``level`` by the manager, so a hand-built table can hold a level.
 
@@ -300,6 +306,16 @@ class TestDefaultRule:
         with pytest.raises(ServiceNotUpError) as raised:
             _ = rule(at(Engine, "tenant-a"), asking(Store), EffectScope())
         assert raised.value.key == at(Store, "tenant-a")
+
+    def test_a_place_of_another_identity_is_refused(self) -> None:
+        # The rule is asked for one identity; a place naming another would answer a ``Store`` field
+        # with a ``Weather``, so it is refused rather than handed over.
+        rule = answering_from(ComponentRegistry(), {at(Weather): Weather()}, lambda _key, _identity: (at(Weather),))
+
+        with pytest.raises(ValueError) as raised:
+            _ = rule(at(Engine), asking(Store), EffectScope())
+
+        assert str(at(Weather)) in str(raised.value)
 
     def test_the_rule_reads_the_table_as_it_fills(self) -> None:
         instances: dict[ComponentKey, Component] = {}
@@ -508,6 +524,19 @@ class TestClosure:
         result = run(assembly.start(at(Engine, "tenant-a"), at(Store)))
 
         assert result.completed == (at(Store), at(Engine, "tenant-a"))
+
+    def test_a_place_that_is_not_the_asker_s_own_is_named_in_the_batch(self) -> None:
+        # Two levels in the qualifier: the endpoint's provider is the account's. The read falls back,
+        # because the rule says which place answers next; the batch names the account's key, because
+        # the closure derives each requirement at the asker's qualifier and consults no rule.
+        registry = declaring(Declaration(Store, instance="acme"), Declaration(Engine, instance="acme/ep1"))
+        up: dict[ComponentKey, Component] = {}
+        assembly = Assembly(registry, up=up, rule=answering_from(registry, up, two_levels))
+
+        result = run(assembly.start(at(Store, "acme"), at(Engine, "acme/ep1")))
+
+        assert result.completed == (at(Store, "acme"), at(Engine, "acme/ep1"))
+        assert assembly.instance(at(Store, "acme/ep1")) is None
 
     def test_a_requirement_that_is_already_up_is_not_started_twice(self) -> None:
         assembly = Assembly(declaring(Declaration(Engine), Declaration(Store)))

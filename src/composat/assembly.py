@@ -97,6 +97,11 @@ class AssemblyResult:
     that failed. Each entry is the event it was told about and what it said, so a sink can be blamed
     for exactly what it saw — and ``ok`` stays a reading about the batch rather than about the
     reporting, because a batch whose keys all came up did come up.
+
+    A key that failed is in ``failed`` and in neither of the other two, and the moves it made on the
+    way are still in the event stream: a step a hook took back is the one reported with ``undone``
+    set, where ``origin`` is where the instance ended up. A projection that reads ``arrival`` without
+    looking at ``undone`` writes a state the instance never rested in.
     """
 
     completed: tuple[ComponentKey, ...] = ()
@@ -159,6 +164,11 @@ deployment that wrote it, so the places come out of its own function::
     def places(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
         account, _, _endpoint = key.instance.partition("/")
         return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
+
+Every place is a key of ``identity``: one of another identity is refused, because the instance it
+names is not what the annotation asks for. And this decides reads only — ``Assembly.start`` derives
+each requirement at the qualifier of the key that needs it and consults no rule, so a place that is
+not the asker's own has to be named in the batch as well.
 """
 
 
@@ -201,6 +211,9 @@ def answering_from(
         _ = effects
         identity = registry.provider_identity(requirement.service)
         places = tuple(candidates(key, identity))
+        for place in places:
+            if place.identity != identity:
+                raise ValueError(f"{place} is not an instance of {identity}")
         found = next(((place, instances[place]) for place in places if place in instances), None)
         if found is None:
             raise ServiceNotUpError(places[0] if places else ComponentKey(identity, key.instance), asked_from=key)
@@ -318,6 +331,8 @@ class Assembly:
         Reading it back is how an application asks whether its chain was the one installed, and how a
         test asks what a field read is going to go through; there is no setter, because a rule is
         given once and a second one would leave the instances attached earlier pointing at the first.
+        One rule serves the whole assembly, so a policy that varies by identity branches inside the
+        candidates function, which is handed the identity it is answering for.
         """
         return self._rule
 
@@ -384,7 +399,9 @@ class Assembly:
         order rather than the caller's, so a requirement is up before the instance that reads it.
         ``enable`` is the level: ``False`` leaves the batch ``LOADED``, which is what a deployment that
         gates each key wants — a declaration says how to build a component, and the call says whether
-        it should be serving.
+        it should be serving. A requirement that is already up is passed over where it rests: a
+        provider an earlier call left ``LOADED`` is not raised by this batch, and a batch that comes up
+        serving reads it as a miss.
 
         A component that fails is left where the failure left it, reported, and the rest still come
         up. ``strict`` asks for the other reading: the keys *this call* brought up are taken back
