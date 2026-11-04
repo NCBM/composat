@@ -167,7 +167,10 @@ deployment that wrote it, so the places come out of its own function::
 
 Every place is a key of ``identity``: one of another identity is refused, because the instance it
 names is not what the annotation asks for. A batch closes over the same list (:class:`Policy`).
-"""
+
+A list is a whole policy, so two axes cannot be applied one after the other by the assembly:
+:func:`composat.std.root.answering_from_the_root` takes a deployment's own list as ``below`` and adds
+the root to it, which is how a two-level address and a process-wide instance are answered by one rule.
 """
 
 

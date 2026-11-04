@@ -65,4 +65,27 @@ reading them in this order means never meeting a symbol that has not been introd
    ([ADR 0005](adr/0005-one-writer-per-key.md)).
 7. **A qualifier is an opaque string, and no layer reads one.** A deployment that addresses two levels
    — an account and one endpoint of it — keeps both in the string and derives the places a requirement
-   may be answered from in its own rule ([ADR 0003](adr/0003-a-key-is-an-address.md)).
+   may be answered from in its own rule ([ADR 0003](adr/0003-a-key-is-an-address.md)); the shipped
+   policy takes that derivation as `below=` ([below](#a-rule-with-levels-in-it)).
+
+## A rule with levels in it
+
+A deployment's addresses may carry more than one level, and the framework is not the one that knows
+it: the places to try come out of the deployment's own function. `answering_from_the_root` takes it
+as `below=` and adds the root after it, so an account-and-endpoint address and a process-wide
+instance are answered by one policy rather than two that would have to agree:
+
+```python
+def two_levels(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """The endpoint's own place, then the account it belongs to."""
+    account, _, _endpoint = key.instance.partition("/")
+    return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
+
+
+rule = answering_from_the_root(registry, up, only={Config, Pool}, below=two_levels)
+```
+
+Read in the order the list is built — the asker's own qualifier, then what `below` derives, then the
+root — and closed over by `Assembly.start` the same way, so the account a read would fall back to is
+one the batch brings up with its dependant. Nothing else widened: `only=` still says which identities
+may cross to the root, and the account is only ever a place of the same identity.
