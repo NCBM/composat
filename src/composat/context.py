@@ -49,7 +49,9 @@ _AT_THE_CALL = "<resolve>"
 
 ``resolve(Store)`` names a bare type, and a bare type carries no extras: that is the reading, not a
 gap — "the ordinary one, no special handling". A caller that wants routing asks by the requirement a
-field would be declared with, which is what a field read already is.
+field would be declared with, which is what a field read already is; ``resolve`` takes the type alone,
+so the metadata an ``Annotated`` layer carries reaches a rule through a field and not through the
+call.
 """
 
 
