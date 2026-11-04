@@ -63,3 +63,6 @@ reading them in this order means never meeting a symbol that has not been introd
 6. **A declaration and an instance are two facts.** A key can be declared and not up (a failed
    admission), and up under a declaration that has since been withdrawn — for a moment, by design
    ([ADR 0005](adr/0005-one-writer-per-key.md)).
+7. **A qualifier is an opaque string, and no layer reads one.** A deployment that addresses two levels
+   — an account and one endpoint of it — keeps both in the string and derives the places a requirement
+   may be answered from in its own rule ([ADR 0003](adr/0003-a-key-is-an-address.md)).
