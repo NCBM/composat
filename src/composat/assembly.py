@@ -170,7 +170,9 @@ names is not what the annotation asks for. A batch closes over the same list (:c
 
 A list is a whole policy, so two axes cannot be applied one after the other by the assembly:
 :func:`composat.std.root.answering_from_the_root` takes a deployment's own list as ``below`` and adds
-the root to it, which is how a two-level address and a process-wide instance are answered by one rule.
+the root to it — ``composat.std.root.ancestors`` for an address of levels, ``composat.std.root.joined``
+to put a table of the deployment's own beside it — which is how a multi-level address, a routed
+identity, and a process-wide instance are answered by one rule.
 """
 
 

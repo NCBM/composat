@@ -21,9 +21,10 @@ A requirement is answered under the asker's own qualifier: `composat.assembly.de
 candidate list is a deployment policy, expressed as a rule built where the assembly is built —
 `composat.std.root.answering_from_the_root` is the shipped example, and it requires the deployment to
 name which identities may be read at a qualifier other than the asker's (`only={Config, Pool}`) and,
-where its addresses carry more than one level, what the levels are worth (`below=`). The two axes
-compose in one policy rather than in two that would have to agree, because a candidate list is a whole
-policy and the assembly applies exactly one.
+where its addresses carry more than one level, what the levels are worth (`below=` — `std.root.ancestors`
+for a qualifier of `/`-separated levels, `std.root.joined` to put a table of its own beside that one).
+The two axes compose in one policy, because a candidate list is a whole policy and the assembly
+applies exactly one.
 
 Which keys come up is the manifest's: a key nothing needs is not a root.
 

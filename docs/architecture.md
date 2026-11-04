@@ -76,16 +76,31 @@ as `below=` and adds the root after it, so an account-and-endpoint address and a
 instance are answered by one policy rather than two that would have to agree:
 
 ```python
-def two_levels(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
-    """The endpoint's own place, then the account it belongs to."""
-    account, _, _endpoint = key.instance.partition("/")
-    return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
-
-
-rule = answering_from_the_root(registry, up, only={Config, Pool}, below=two_levels)
+rule = answering_from_the_root(registry, up, only={Config, Pool}, below=ancestors)
 ```
 
-Read in the order the list is built — the asker's own qualifier, then what `below` derives, then the
-root — and closed over by `Assembly.start` the same way, so the account a read would fall back to is
-one the batch brings up with its dependant. Nothing else widened: `only=` still says which identities
-may cross to the root, and the account is only ever a place of the same identity.
+`ancestors` reads `/` as the level separator and names every level above the caller, nearest first:
+`acme/one/client` answers `acme/one/client`, then `acme/one`, then `acme`. Every level is kept because
+a caller three levels down depends on the level *directly* above it — a session reading the endpoint
+it belongs to — and a derivation that cut to the first segment would skip the places in between.
+
+A second axis is another derivation, and `joined` puts both in the one slot a rule has:
+
+```python
+def routing(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """The credential this deployment picked, and no opinion about anything else."""
+    if identity != registry.provider_identity(LLMProvider):
+        return ()
+    account, _, _endpoint = key.instance.partition("/")
+    return (ComponentKey(identity, f"{account}/credential-a"),)
+
+
+rule = answering_from_the_root(registry, up, only={Config}, below=joined(routing, ancestors))
+```
+
+A derivation with no opinion about an identity answers nothing, which is what keeps a routing table
+out of every other identity's way. Places are read in the order the list is built — the asker's own
+qualifier, then what `below` derives, then the root — and `Assembly.start` closes over that same list,
+so an account a read would fall back to comes up with its dependant. Nothing else is widened: `only=`
+still says which identities may cross to the root, and every place is a place of the same identity — a
+sibling is never one.
