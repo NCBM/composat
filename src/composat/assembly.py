@@ -99,9 +99,9 @@ class AssemblyResult:
     reporting, because a batch whose keys all came up did come up.
 
     A key that failed is in ``failed`` and in neither of the other two, and the moves it made on the
-    way are still in the event stream: a step a hook took back is the one reported with ``undone``
-    set, where ``origin`` is where the instance ended up. A projection that reads ``arrival`` without
-    looking at ``undone`` writes a state the instance never rested in.
+    way are still in the event stream: a step a hook took back is reported with ``undone`` set, as
+    the move back — so a projection that writes every event's ``arrival`` ends up holding the truth,
+    and ``undone`` is how it knows which rows it wrote for a state the instance never rested in.
     """
 
     completed: tuple[ComponentKey, ...] = ()

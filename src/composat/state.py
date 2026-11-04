@@ -187,9 +187,10 @@ class Committed:
     :class:`~composat.assembly.Event`.
 
     ``undone`` says which of two things happened to the pair: ``False`` is the commit, where
-    ``arrival`` is the state the hook now runs in, and ``True`` is a hook that raised putting its own
-    step back, where ``origin`` is where the instance ended up and ``arrival`` is what it claimed for
-    as long as the hook ran. A reload arrives where it started, so its two states are the same one.
+    ``arrival`` is the state the hook now runs in, and ``True`` is a hook that raised and put its own
+    step back: the pair is then that move back, with ``origin`` the state the instance had claimed and
+    ``arrival`` where it ended up. A reload arrives where it started, so its two states are the same
+    one.
     """
 
     operation: Operation
