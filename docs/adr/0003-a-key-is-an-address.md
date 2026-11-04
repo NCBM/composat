@@ -22,8 +22,7 @@ candidate list is a deployment policy, expressed as a rule built where the assem
 `composat.std.root.answering_from_the_root` is the shipped example, and it requires the deployment to
 name which identities may be read at a qualifier other than the asker's (`only={Config, Pool}`).
 
-Which keys come up is the manifest's: a key nothing needs is not a root, and `Assembly.start` brings up
-what the named keys declare, transitively, at the qualifier of the key that named it.
+Which keys come up is the manifest's: a key nothing needs is not a root.
 
 ## Consequences
 
@@ -34,10 +33,11 @@ what the named keys declare, transitively, at the qualifier of the key that name
   the table it was handed and never rebinds it.
 - `ComponentRegistry.provider_identity` is the single place where an interface (`Protocol`) becomes an
   identity, so the graph and the read agree about what an annotation names.
-- The closure is the manifest's, and it consults no rule: `Assembly.start` derives each requirement at
-  the qualifier of the key that needs it, so a place another rule would answer from — an account above
-  an endpoint, an unqualified shared instance — has to be named in the batch. Left out, it fails there
-  and names the field (`KeyError`), rather than being filled by a read that would have found it.
+- The closure is the manifest's, and it reads through the rule: `Assembly.start` derives each
+  requirement at the first place the rule names that is declared, so a place a read would fall back to
+  — an account above an endpoint, an unqualified shared instance — is one the batch brings up with it.
+  A place nothing declares still fails at the closure, with a `KeyError` naming the field and the
+  places tried, rather than at the first field read.
 
 ## Alternatives considered
 
