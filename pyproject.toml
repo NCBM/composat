@@ -11,6 +11,11 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 
+[project.urls]
+Homepage = "https://github.com/NCBM/composat"
+Repository = "https://github.com/NCBM/composat"
+Issues = "https://github.com/NCBM/composat/issues"
+
 [dependency-groups]
 dev = [
   "basedpyright>=1.40.2",
