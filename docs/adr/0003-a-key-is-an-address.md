@@ -34,6 +34,10 @@ what the named keys declare, transitively, at the qualifier of the key that name
   the table it was handed and never rebinds it.
 - `ComponentRegistry.provider_identity` is the single place where an interface (`Protocol`) becomes an
   identity, so the graph and the read agree about what an annotation names.
+- The closure is the manifest's, and it consults no rule: `Assembly.start` derives each requirement at
+  the qualifier of the key that needs it, so a place another rule would answer from — an account above
+  an endpoint, an unqualified shared instance — has to be named in the batch. Left out, it fails there
+  and names the field (`KeyError`), rather than being filled by a read that would have found it.
 
 ## Alternatives considered
 
