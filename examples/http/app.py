@@ -142,7 +142,7 @@ class Renderer(Component):
 
     def __init__(self) -> None:
         super().__init__()
-        self.pending = InFlight(self.effect_scope)
+        self.pending = InFlight(self)
 
     def tenant(self) -> str:
         """Whose instance this is, read off the address it answers at."""

@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import final
 
-from composat import EffectScope
+from composat import Component
 
 
 @final
@@ -22,19 +22,19 @@ class InFlight:
     Started work is registered here rather than with a bare ``create_task`` because two things have to
     be able to happen to it: this instance waits for it, and its epoch cancels it when nobody does.
 
-    ``scope`` is the instance's epoch scope, taken when the tracker is made. A scope that has been
-    closed takes no more effects, so a tracker is not carried across an ``unload``: the next epoch
-    gets a new one.
+    ``owner`` is read for its scope on every :meth:`add` rather than once at construction, because that
+    scope is replaced when an epoch ends: a tracker built in ``__init__`` goes on registering into
+    whichever epoch the instance is in, and a second ``load`` needs no second tracker.
 
     A failure is not the drain's to report. A task that raises belongs to whoever started the work,
     and :meth:`drain` leaves it alone: it is collected by the loop, which is where a background
     failure has always gone in this tree (:meth:`~composat.EffectScope.after` says the same).
     """
 
-    __slots__ = ("_scope", "_started")
+    __slots__ = ("_owner", "_started")
 
-    def __init__(self, scope: EffectScope, /) -> None:
-        self._scope = scope
+    def __init__(self, owner: Component, /) -> None:
+        self._owner = owner
         self._started: set[asyncio.Task[object]] = set()
 
     def __len__(self) -> int:
@@ -50,7 +50,7 @@ class InFlight:
         task = asyncio.create_task(work)
         self._started.add(task)
         _ = task.add_done_callback(self._started.discard)
-        _ = self._scope.put(task.cancel)
+        _ = self._owner.effect_scope.put(task.cancel)
 
     async def drain(self, after: float, /) -> int:
         """Let what is running finish, for up to ``after`` seconds; cut off the rest and wait for it.

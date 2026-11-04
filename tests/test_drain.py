@@ -7,7 +7,7 @@ from collections.abc import Coroutine
 
 import pytest
 
-from composat import EffectScope
+from composat import Component, reopen_epoch
 from composat.std.drain import InFlight
 
 
@@ -18,7 +18,7 @@ def run[T](coro: Coroutine[object, object, T], /) -> T:
 class TestDraining:
     def test_nothing_in_flight_is_nothing_to_wait_for(self) -> None:
         async def drive() -> int:
-            return await InFlight(EffectScope()).drain(1.0)
+            return await InFlight(Component()).drain(1.0)
 
         assert run(drive()) == 0
 
@@ -30,7 +30,7 @@ class TestDraining:
             done.append("finished")
 
         async def drive() -> int:
-            flying = InFlight(EffectScope())
+            flying = InFlight(Component())
             flying.add(work())
             return await flying.drain(1.0)
 
@@ -47,7 +47,7 @@ class TestDraining:
                 ended.append("over")
 
         async def drive() -> int:
-            flying = InFlight(EffectScope())
+            flying = InFlight(Component())
             flying.add(work())
             return await flying.drain(0.0)
 
@@ -57,7 +57,7 @@ class TestDraining:
 
     def test_what_is_still_running_is_what_a_drain_would_wait_for(self) -> None:
         async def drive() -> tuple[int, int]:
-            flying = InFlight(EffectScope())
+            flying = InFlight(Component())
             flying.add(asyncio.sleep(10))
             held = len(flying)
             _ = await flying.drain(0.0)
@@ -67,7 +67,7 @@ class TestDraining:
 
     def test_finished_work_is_not_counted_again(self) -> None:
         async def drive() -> int:
-            flying = InFlight(EffectScope())
+            flying = InFlight(Component())
             flying.add(asyncio.sleep(0))
             for _ in range(3):  # the task finishes on one tick and reports back on the next
                 await asyncio.sleep(0)
@@ -85,8 +85,8 @@ class TestDraining:
                 ended.append("over")
 
         async def drive() -> None:
-            scope = EffectScope()
-            flying = InFlight(scope)
+            owner = Component()
+            flying = InFlight(owner)
             flying.add(work())
             draining = asyncio.create_task(flying.drain(10.0))
             await asyncio.sleep(0)  # the drain is waiting on the work now
@@ -95,7 +95,7 @@ class TestDraining:
                 await draining
             # Nothing waited for it, so the epoch is what ends it — the floor, and why the task is
             # registered there as well.
-            await scope.dispose()
+            await owner.effect_scope.dispose()
             for _ in range(3):
                 await asyncio.sleep(0)
 
@@ -113,11 +113,25 @@ class TestDraining:
                 ended.append("over")
 
         async def drive() -> None:
-            scope = EffectScope()
-            InFlight(scope).add(work())
-            await scope.dispose()
+            owner = Component()
+            InFlight(owner).add(work())
+            await owner.effect_scope.dispose()
             await asyncio.sleep(0)  # the cancellation is delivered on a tick of its own
 
         run(drive())
 
         assert ended == ["over"]
+
+    def test_a_tracker_registers_into_the_epoch_the_instance_is_in_now(self) -> None:
+        async def drive() -> tuple[int, bool]:
+            owner = Component()
+            flying = InFlight(owner)
+            ended = owner.effect_scope
+            await reopen_epoch(owner)  # what an unload does: the old scope closes, a new one starts
+            flying.add(asyncio.sleep(10))
+            _ = await flying.drain(0.0)
+            return len(owner.effect_scope), ended.closed
+
+        # The registration landed in the new epoch, and the scope the tracker was made under is the
+        # closed one — a tracker holding it would have raised on the ``add`` instead.
+        assert run(drive()) == (1, True)
