@@ -7,7 +7,8 @@ caller's own qualifier first, and the unqualified instance after it.
 
 That is a policy rather than a fact about the type, so it lives here and not in the core. The same
 class is the process-wide one in one deployment and one-per-tenant in another, and what crosses the
-axis is decided where the assembly is built, once::
+axis is decided where the assembly is built, once. A batch closes over the same list, so a dependant
+that comes up on its own brings the shared instance up with it::
 
     up: dict[ComponentKey, Component] = {}
     rule = answering_from_the_root(registry, up, only={Config, Pool})
@@ -27,7 +28,7 @@ from composat import (
     ComponentIdentity,
     ComponentKey,
     ComponentRegistry,
-    RequirementResolver,
+    Policy,
     answering_from,
 )
 
@@ -38,7 +39,7 @@ def answering_from_the_root(
     /,
     *,
     only: Collection[type[object]],
-) -> RequirementResolver:
+) -> Policy:
     """Answer at the asker's own qualifier, and after it at the unqualified instance of ``only``.
 
     ``only`` is what may cross the axis, and it is named by the deployment rather than inferred: a

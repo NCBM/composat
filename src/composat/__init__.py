@@ -17,6 +17,7 @@ from .assembly import Assembly as Assembly
 from .assembly import AssemblyResult as AssemblyResult
 from .assembly import Candidates as Candidates
 from .assembly import Event as Event
+from .assembly import Policy as Policy
 from .assembly import Replacement as Replacement
 from .assembly import answering_from as answering_from
 from .assembly import default_rule as default_rule

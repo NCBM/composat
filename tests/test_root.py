@@ -14,12 +14,14 @@ from typing import Protocol
 import pytest
 
 from composat import (
+    Assembly,
     Component,
     ComponentIdentity,
     ComponentKey,
     ComponentManager,
     ComponentRegistry,
     ComponentState,
+    Declaration,
     EffectScope,
     RequirementSpec,
     ServiceNotUpError,
@@ -180,3 +182,34 @@ class TestNestedCalls:
         # own qualifier, then the root.
         assert raised.value.key == at(Store, "acme/client")
         assert raised.value.asked_from == at(Engine, "acme/client")
+
+
+class TestTheBatchFollowsThePolicy:
+    """The places a read falls back to are the places a batch brings up, so the root needs no naming."""
+
+    def test_a_dependant_that_comes_up_alone_brings_the_root_up_with_it(self) -> None:
+        registry = ComponentRegistry()
+        up: dict[ComponentKey, Component] = {}
+        _ = registry.declare_all((Declaration(Store), Declaration(Engine, "acme")))
+        assembly = Assembly(registry, up=up, rule=answering_from_the_root(registry, up, only={Store}))
+
+        result = run(assembly.start(at(Engine, "acme")))
+
+        assert result.completed == (at(Store), at(Engine, "acme"))
+
+    def test_a_dependant_admitted_later_reads_the_root_that_is_already_up(self) -> None:
+        registry = ComponentRegistry()
+        up: dict[ComponentKey, Component] = {}
+        _ = registry.declare_all((Declaration(Store), Declaration(Engine, "acme")))
+        assembly = Assembly(registry, up=up, rule=answering_from_the_root(registry, up, only={Store}))
+        _ = run(assembly.start(at(Engine, "acme")))
+
+        result = run(assembly.admit(Declaration(Engine, "globex")))
+
+        assert result.completed == (at(Engine, "globex"),)
+        assert assembly.instance(at(Store, "globex")) is None
+        shared = assembly.instance(at(Store))
+        admitted = assembly.instance(at(Engine, "globex"))
+        assert isinstance(shared, Store)
+        assert isinstance(admitted, Engine)
+        assert admitted.store is shared

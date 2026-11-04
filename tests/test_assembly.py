@@ -525,15 +525,15 @@ class TestClosure:
 
         assert result.completed == (at(Store), at(Engine, "tenant-a"))
 
-    def test_a_place_that_is_not_the_asker_s_own_is_named_in_the_batch(self) -> None:
-        # Two levels in the qualifier: the endpoint's provider is the account's. The read falls back,
-        # because the rule says which place answers next; the batch names the account's key, because
-        # the closure derives each requirement at the asker's qualifier and consults no rule.
+    def test_a_place_that_is_not_the_asker_s_own_is_derived_from_the_rule(self) -> None:
+        # Two levels in the qualifier: the endpoint's provider is the account's. The rule says so, and
+        # the batch closes over the same list — the dependant alone is enough, and the endpoint's own
+        # place is never declared, so nothing there is built.
         registry = declaring(Declaration(Store, instance="acme"), Declaration(Engine, instance="acme/ep1"))
         up: dict[ComponentKey, Component] = {}
         assembly = Assembly(registry, up=up, rule=answering_from(registry, up, two_levels))
 
-        result = run(assembly.start(at(Store, "acme"), at(Engine, "acme/ep1")))
+        result = run(assembly.start(at(Engine, "acme/ep1")))
 
         assert result.completed == (at(Store, "acme"), at(Engine, "acme/ep1"))
         assert assembly.instance(at(Store, "acme/ep1")) is None

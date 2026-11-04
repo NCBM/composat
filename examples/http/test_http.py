@@ -309,7 +309,8 @@ def test_a_request_that_cannot_be_answered_is_refused_before_anything_is_opened(
             # Nothing was opened for a request that could not be answered: no rendering, no client.
             assert tally.let_go == 0
             assert tally.written == 0
-            assert len(app.assembly.keys()) == len(app.roots)
+            up = app.assembly.keys()
+            assert {key for key in up if key.identity == key_of(Renderer).identity} == set(app.roots)
             assert refused.letting_go == [0, 0]
 
         _ = await serve(app, during)

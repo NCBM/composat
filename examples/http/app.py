@@ -234,7 +234,7 @@ class Application:
         self.tenants = tenants
         self.ttl = ttl
         self.clock = clock
-        self.roots = (key_of(Tally), *(key_of(Renderer, tenant) for tenant in tenants))
+        self.roots = tuple(key_of(Renderer, tenant) for tenant in tenants)
 
     async def start(self) -> None:
         """Bring up the process and its tenants: what the lifespan's startup is."""

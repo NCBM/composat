@@ -166,10 +166,32 @@ deployment that wrote it, so the places come out of its own function::
         return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
 
 Every place is a key of ``identity``: one of another identity is refused, because the instance it
-names is not what the annotation asks for. And this decides reads only — ``Assembly.start`` derives
-each requirement at the qualifier of the key that needs it and consults no rule, so a place that is
-not the asker's own has to be named in the batch as well.
+names is not what the annotation asks for. A batch closes over the same list (:class:`Policy`).
 """
+"""
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class Policy:
+    """A rule and the places it looks at: what a read answers from, and what a batch closes over.
+
+    ``places`` is the candidate list the rule was built from, carried here rather than written twice
+    because the two readings have to agree: :meth:`Assembly.start` derives each requirement through
+    it and takes the first place that is *declared*, so the key a read would fall back to is one the
+    batch brings up.
+
+    A rule written by hand is still a :class:`~composat.RequirementResolver` and needs none of this:
+    one that does not hand over this record leaves a batch deriving each requirement at the asker's
+    own qualifier, which is where a rule with no candidate list would look anyway.
+    """
+
+    resolve: RequirementResolver
+    places: Candidates
+
+    def __call__(self, key: ComponentKey, requirement: RequirementSpec, effects: Reclaimable, /) -> object:
+        """The instance ``resolve`` answers with, so a policy is a rule wherever one is expected."""
+        return self.resolve(key, requirement, effects)
 
 
 def answering_from(
@@ -177,7 +199,7 @@ def answering_from(
     instances: Mapping[ComponentKey, Component],
     candidates: Candidates,
     /,
-) -> RequirementResolver:
+) -> Policy:
     """The framework's answer, over the places ``candidates`` says a requirement may be found.
 
     Built from two things it does not own — the registry says which identity a contract names, the
@@ -225,7 +247,7 @@ def answering_from(
             raise ServiceNotUpError(provider, asked_from=key, level=level)
         return instance
 
-    return resolve
+    return Policy(resolve, candidates)
 
 
 def _own_qualifier(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
@@ -236,7 +258,7 @@ def _own_qualifier(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[C
 def default_rule(
     registry: ComponentRegistry,
     instances: Mapping[ComponentKey, Component],
-) -> RequirementResolver:
+) -> Policy:
     """The framework's own answer: what is up under the asker's qualifier, or a refusal.
 
     The qualifier is the whole lookup. Instances of one identity are told apart by it, so a caller
@@ -299,6 +321,7 @@ class Assembly:
     _up: dict[ComponentKey, Component]
     _moving: dict[ComponentKey, str]
     _rule: RequirementResolver
+    _places: Candidates
     _subscribers: list[Observer]
 
     def __init__(
@@ -316,12 +339,17 @@ class Assembly:
 
         ``manager`` drives the instances this assembly brings up. It is handed in so that a process
         already driving components keeps one set of per-instance locks rather than two.
+
+        A :class:`Policy` among ``rule`` is also where the batch looks: :meth:`start` derives a
+        requirement through the places that policy carries. A rule that carries no list — one written
+        by hand — leaves the derivation at the asker's own qualifier.
         """
         self._registry = registry
         self._manager = ComponentManager() if manager is None else manager
         self._up = {} if up is None else up
         self._moving = {}
         self._rule = default_rule(registry, self._up) if rule is None else rule
+        self._places = self._rule.places if isinstance(self._rule, Policy) else _own_qualifier
         self._subscribers = []
 
     @property
@@ -738,16 +766,18 @@ class Assembly:
     def _closed(self, keys: tuple[ComponentKey, ...]) -> tuple[ComponentKey, ...]:
         """The batch ``keys`` is, closed over what they require, still in the caller's order.
 
-        A listed key brings up what its type declares, transitively, each dependency at the qualifier
-        of the key that named it. An identity the caller listed itself is not derived: the batch
-        already says where that thing sits, and the derivation only fills the gaps. An implied key
-        that is already up is passed over — this call has nothing to do for it, and taking it down
-        with its dependant later is not this call's business either.
+        A listed key brings up what its type declares, transitively, at the first place the rule names
+        that is *declared*: the asker's own qualifier unless a policy says where to look next (see
+        :class:`Policy`). An identity the caller listed itself is not derived — the batch already says
+        where that thing sits, and the derivation only fills the gaps. An implied key that is already
+        up is passed over: this call has nothing to do for it, and taking it down with its dependant
+        later is not this call's business either.
 
-        An implied key nothing declares is a ``KeyError`` naming the requirement that implied it,
-        because the alternative — starting the declared half and failing at the first field read —
-        puts the cause as far from the call as it can be. The walk carries the parent that reached the
-        key, which is what makes the message name a field rather than an identity nobody wrote down.
+        An implied key nothing declares is a ``KeyError`` naming the requirement that implied it and
+        the places it looked at, because the alternative — starting the declared half and failing at
+        the first field read — puts the cause as far from the call as it can be. The walk carries the
+        parent that reached the key, which is what makes the message name a field rather than an
+        identity nobody wrote down.
         """
         listed = {key.identity for key in keys}
         batch: dict[ComponentKey, None] = dict.fromkeys(keys)
@@ -758,12 +788,14 @@ class Assembly:
                 provider = self._registry.provider_identity(spec.service)
                 if provider in listed:
                     continue
-                implied = ComponentKey(provider, parent.instance)
+                places = tuple(self._places(parent, provider))
+                implied = next((place for place in places if place in self._registry), None)
+                if implied is None:
+                    needed = f"{parent} declares {spec.name}: {spec.service.__qualname__}"
+                    where = " or ".join(str(place) for place in places) or "a place"
+                    raise KeyError(f"{needed}, so it needs {where}, and nothing is declared there")
                 if implied in batch or implied in self._up:
                     continue
-                if implied not in self._registry:
-                    needed = f"{parent} declares {spec.name}: {spec.service.__qualname__}"
-                    raise KeyError(f"{needed}, so it needs {implied}, and nothing is declared there")
                 batch[implied] = None
                 expanding.append(implied)
         return tuple(batch)
