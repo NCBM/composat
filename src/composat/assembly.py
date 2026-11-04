@@ -551,11 +551,12 @@ class Assembly:
         read and its requirements resolve, and nothing it does on ``enable`` has happened — and the key
         moves to it before the old generation is torn down: a key that answered nothing while the old
         one unloaded would be the gap this verb exists to avoid. What a reader sees during that
-        teardown is the new generation at ``LOADED``, built and not yet taking work. Only after the old
-        generation has let go is the new one brought to the level that one *served* at, which keeps a
-        registration made on the way up (a matcher in a shared dispatcher, a row in a table) from being
-        live twice. A key that rested at ``LOADED`` has no publish segment: nothing it replaced was
-        serving, so the swap is the one move it always was.
+        teardown is the new generation at ``LOADED``, built and not yet taking work — a reader that
+        has to read *now* waits it out with ``composat.std.wait.serving`` rather than retrying. Only
+        after the old generation has let go is the new one brought to the level that one *served* at,
+        which keeps a registration made on the way up (a matcher in a shared dispatcher, a row in a
+        table) from being live twice. A key that rested at ``LOADED`` has no publish segment: nothing
+        it replaced was serving, so the swap is the one move it always was.
 
         Everything that raises happens before the key is touched — a declaration the registry will not
         take, and a generation that will not come up, which is taken back down and leaves the old
