@@ -31,7 +31,7 @@ from composat import (
     require,
     resolve,
 )
-from composat.std.root import answering_from_the_root
+from composat.std.root import ancestors, answering_from_the_root, joined
 
 
 def run[T](coro: Coroutine[object, object, T], /) -> T:
@@ -54,6 +54,16 @@ def two_levels(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[Compo
     return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
 
 
+def routing(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """A table's worth of places: the provider this caller's account was set up to read, and nothing
+    about any other identity — which is the whole of what a derivation has to say to stay out of the
+    rest of a rule's way."""
+    if identity != ComponentIdentity.of(Provider):
+        return ()
+    account, _, _endpoint = key.instance.partition("/")
+    return (ComponentKey(identity, f"{account}/credential-a"),)
+
+
 def brought_up(component: Component, level: ComponentState = ComponentState.LOADED) -> Component:
     """``component`` driven to ``level`` by the manager, so a hand-built table can hold a level."""
     run(ComponentManager().migrate(component, level))
@@ -68,6 +78,16 @@ class Engine(Component):
     """A caller: what a tenant's own component looks like when it needs something process-wide."""
 
     store: Store = require()
+
+
+class Provider(Component):
+    """What a deployment picks among by credential: one per account, and one under each of them."""
+
+
+class Endpoint(Component):
+    """A caller two levels down, reading the provider its own workspace routed it to."""
+
+    provider: Provider = require()
 
 
 class Contract(Protocol):
@@ -216,6 +236,75 @@ class TestTheBatchFollowsTheLevels:
         # The account is the first place declared; the root is declared as well and is not derived.
         assert result.completed == (at(Store, "acme"), at(Engine, "acme/one"))
         assert assembly.instance(at(Store)) is None
+
+
+class TestTheAddressItself:
+    """``ancestors`` reads a qualifier's levels: every one above the caller, nearest first."""
+
+    def test_each_level_above_a_caller_is_named(self) -> None:
+        assert ancestors(at(Engine, "acme/one/client"), ComponentIdentity.of(Store)) == (
+            at(Store, "acme/one/client"),
+            at(Store, "acme/one"),
+            at(Store, "acme"),
+        )
+
+    def test_an_address_with_no_level_in_it_names_one_place(self) -> None:
+        assert ancestors(at(Engine, "acme"), ComponentIdentity.of(Store)) == (at(Store, "acme"),)
+        assert ancestors(at(Engine), ComponentIdentity.of(Store)) == (at(Store),)
+
+
+class TestTwoDerivationsInOneRule:
+    """One slot, two axes: a table routes one identity and the address answers the rest."""
+
+    def test_the_table_routes_the_identity_it_has_an_opinion_about(self) -> None:
+        routed = Provider()
+        instances = {at(Provider, "acme/credential-a"): routed, at(Provider, "acme"): Provider()}
+        rule = answering_from_the_root(ComponentRegistry(), instances, only=set(), below=joined(routing, ancestors))
+
+        assert rule(at(Endpoint, "acme/one"), asking(Provider), EffectScope()) is routed
+
+    def test_the_address_answers_the_identities_the_table_has_none_about(self) -> None:
+        account = Store()
+        instances = {at(Store, "acme"): account, at(Provider, "acme"): Provider()}
+        rule = answering_from_the_root(ComponentRegistry(), instances, only=set(), below=joined(routing, ancestors))
+
+        assert rule(at(Endpoint, "acme/one"), asking(Store), EffectScope()) is account
+
+    def test_a_caller_three_levels_down_reaches_the_level_just_above_it(self) -> None:
+        endpoint = Store()
+        instances = {at(Store, "acme/one"): endpoint, at(Store, "acme"): Store()}
+        rule = answering_from_the_root(ComponentRegistry(), instances, only=set(), below=joined(routing, ancestors))
+
+        assert rule(at(Endpoint, "acme/one/client"), asking(Store), EffectScope()) is endpoint
+
+    def test_a_place_named_twice_is_listed_once(self) -> None:
+        place = at(Store, "acme")
+        rule = answering_from_the_root(
+            ComponentRegistry(), {place: Store()}, only=set(), below=joined(ancestors, ancestors)
+        )
+
+        assert rule.places(at(Engine, "acme"), ComponentIdentity.of(Store)) == (place,)
+
+    def test_a_derivation_with_no_opinion_answers_nothing(self) -> None:
+        assert joined(routing)(at(Endpoint, "acme/one"), ComponentIdentity.of(Store)) == ()
+
+
+class TestTheBatchFollowsTwoDerivations:
+    """A batch closes over the same list, so the routed provider is what comes up with the endpoint."""
+
+    def test_a_dependant_started_alone_brings_up_the_provider_the_table_routed(self) -> None:
+        registry = ComponentRegistry()
+        up: dict[ComponentKey, Component] = {}
+        _ = registry.declare_all((Declaration(Provider, "acme/credential-a"), Declaration(Endpoint, "acme/one")))
+        rule = answering_from_the_root(registry, up, only=set(), below=joined(routing, ancestors))
+        assembly = Assembly(registry, up=up, rule=rule)
+
+        result = run(assembly.start(at(Endpoint, "acme/one")))
+
+        assert result.completed == (at(Provider, "acme/credential-a"), at(Endpoint, "acme/one"))
+        endpoint = assembly.instance(at(Endpoint, "acme/one"))
+        assert isinstance(endpoint, Endpoint)
+        assert endpoint.provider is assembly.instance(at(Provider, "acme/credential-a"))
 
 
 class TestNestedCalls:

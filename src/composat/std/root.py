@@ -14,16 +14,11 @@ that comes up on its own brings the shared instance up with it::
     rule = answering_from_the_root(registry, up, only={Config, Pool})
     assembly = Assembly(registry, up=up, rule=rule)
 
-The second axis is the deployment's, and it is passed in rather than assumed: an address with an
-account and one of its endpoints in it needs the account's place tried on the way to the root, and
-``below`` is that derivation. Both readings come out of one policy, and both the read and the batch
-walk the same list::
+The second axis is the deployment's, passed in rather than guessed: ``below`` is where an address
+carries something above the caller's own place, and :func:`ancestors` and :func:`joined` are the
+derivations this ships::
 
-    def two_levels(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
-        account, _, _endpoint = key.instance.partition("/")
-        return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
-
-    rule = answering_from_the_root(registry, up, only={Config, Pool}, below=two_levels)
+    rule = answering_from_the_root(registry, up, only={Config}, below=joined(routing, ancestors))
 
 What it deliberately does not do is fall back in the other direction or across siblings: a qualified
 caller may reach the root, the root reaches nothing else, and ``tenant-a`` never reads
@@ -63,9 +58,9 @@ def answering_from_the_root(
 
     ``below`` is what the address itself is worth: the places tried on the way *down* to the root,
     which is where a qualifier carrying more than one level puts its account. It is a
-    :data:`~composat.Candidates` for the same reason ``only`` is a named set — the framework does not
-    read a qualifier, so a deployment that splits one says how. Left out, the asker's own qualifier is
-    the only place below the root, which is the whole of what a one-level address needs.
+    :data:`~composat.Candidates` because the framework does not read a qualifier, so a deployment that
+    splits one says how. Left out, the asker's own qualifier is the only place below the root, which is
+    the whole of what a one-level address needs.
 
     The caller's qualifier comes first, which is what makes the shared instance a *default*: whatever
     ``below`` returns goes after it, because a list that starts anywhere else answers a caller from
@@ -94,3 +89,47 @@ def answering_from_the_root(
         return tuple(places)
 
     return answering_from(registry, instances, candidates)
+
+
+def ancestors(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+    """The caller's own place, then each level above it in the address, nearest first.
+
+    A qualifier is opaque to the framework, and this is the one reading of one that a deployment can
+    hand back: ``/`` separates levels, so ``acme/one/two`` answers ``acme/one/two``, then
+    ``acme/one``, then ``acme``. Every level is kept rather than only the account, because a caller
+    three levels down depends on the level directly above it — an endpoint's session reading the
+    endpoint — and a derivation that cut to the first segment would skip a level nothing else names.
+
+    An address with no ``/`` in it names one place, which is where this reads the same as the default
+    rule. It says nothing about the root: a place is a place, and what may cross to the root is
+    ``only=``.
+    """
+    places = [ComponentKey(identity, key.instance)]
+    rest = key.instance
+    while "/" in rest:
+        rest = rest.rpartition("/")[0]
+        places.append(ComponentKey(identity, rest))
+    return tuple(places)
+
+
+def joined(*derivations: Candidates) -> Candidates:
+    """The places every derivation names, asked in order, each place once.
+
+    Two axes do not get two rules — a candidate list is a whole policy, and an assembly applies one —
+    so a deployment that routes one identity by a table and the rest by their address says both here.
+    A derivation with no opinion about an identity answers nothing, which is what keeps the routing
+    table out of every other identity's way.
+
+    The order is the answer: the first derivation's first place leads, and a place two derivations name
+    is listed once, at its earliest position, so one read does not try the same instance twice.
+    """
+
+    def places(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+        ordered: list[ComponentKey] = []
+        for derivation in derivations:
+            for place in derivation(key, identity):
+                if place not in ordered:
+                    ordered.append(place)
+        return tuple(ordered)
+
+    return places
