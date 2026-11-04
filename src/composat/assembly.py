@@ -152,6 +152,13 @@ type Candidates = Callable[[ComponentKey, ComponentIdentity], Iterable[Component
 The asker's own qualifier first is not something this shape can enforce, and it is the one thing
 every policy has to keep: a list that starts anywhere else answers a caller from another instance
 while its own is up. Everything after that first place is what a deployment is choosing.
+
+A qualifier with two levels in it — an account and one of its endpoints — is two levels only to the
+deployment that wrote it, so the places come out of its own function::
+
+    def places(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+        account, _, _endpoint = key.instance.partition("/")
+        return (ComponentKey(identity, key.instance), ComponentKey(identity, account))
 """
 
 
