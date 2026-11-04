@@ -50,6 +50,12 @@ must not be able to replace is not offered to it as a member.
   would speed up is not on any hot path, and it would buy abstraction nobody asked for.
 - **Constructor injection.** Dependencies bound at construction are a snapshot, for the same reasons
   `@dataclass_transform` is.
+- **An awaitable requirement** (`store: Awaitable[Store]`, or a rule written as a coroutine). A
+  requirement is read from code that is not a coroutine — a plain function under a component asks the
+  call for what it needs (`examples/calls`) — and a descriptor's `__get__` cannot await, so making the
+  read asynchronous would make every reading site, and everything above it, asynchronous. The await
+  belongs to acquiring the instance (`load`, `enable`) and to waiting for a replacement
+  (`composat.std.wait.serving`).
 - **The annotation alone declares the requirement** (`store: Store` with no marker). A checker cannot
   see a descriptor installed by `__init_subclass__`, so every such field earns
   `reportUninitializedInstanceVariable`; and "this field is a requirement" can be said outright rather
