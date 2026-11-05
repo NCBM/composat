@@ -221,6 +221,23 @@ class TestAListOfLevelsBelowTheRoot:
         # list is a set of places: the root is still after it, and nothing is listed twice.
         assert rule.places(at(Engine, "acme"), ComponentIdentity.of(Store)) == (at(Store, "acme"), at(Store))
 
+    def test_a_caller_at_the_empty_qualifier_is_routed_like_any_other(self) -> None:
+        # A table names its places by identity, so it has something to say about an ask with no address
+        # in it. ``two_levels`` derives from the address instead, which is why a root caller still gets
+        # nowhere beyond its own place under that one.
+        routed = Store()
+        instances = {at(Store, "provider"): routed}
+
+        def table(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
+            if identity != ComponentIdentity.of(Store):
+                return ()
+            account, _, _endpoint = key.instance.partition("/")
+            return (at(Store, account or "provider"),)
+
+        rule = answering_from_the_root(ComponentRegistry(), instances, only=set(), below=table)
+
+        assert rule(at(Engine), asking(Store), EffectScope()) is routed
+
 
 class TestTheBatchFollowsTheLevels:
     """A batch closes over the same list, so the account is brought up rather than the root."""

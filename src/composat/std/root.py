@@ -21,8 +21,9 @@ derivations this ships::
     rule = answering_from_the_root(registry, up, only={Config}, below=joined(routing, ancestors))
 
 What it deliberately does not do is fall back in the other direction or across siblings: a qualified
-caller may reach the root, the root reaches nothing else, and ``tenant-a`` never reads
-``tenant-b``. Those are the two ways a lookup table turns into a coincidence.
+caller may reach the root, nothing derived here ever takes the root anywhere else, and ``tenant-a``
+never reads ``tenant-b``. Those are the two ways a lookup table turns into a coincidence. ``below`` is
+the deployment's own reading, and it is asked of every caller, the root included.
 """
 
 from __future__ import annotations
@@ -60,7 +61,9 @@ def answering_from_the_root(
     which is where a qualifier carrying more than one level puts its account. It is a
     :data:`~composat.Candidates` because the framework does not read a qualifier, so a deployment that
     splits one says how. Left out, the asker's own qualifier is the only place below the root, which is
-    the whole of what a one-level address needs.
+    the whole of what a one-level address needs. It is asked of every caller, the empty qualifier
+    included: an address with nothing in it has no level to derive, but a table keyed by identity reaches
+    a component declared at the root.
 
     The caller's qualifier comes first, which is what makes the shared instance a *default*: whatever
     ``below`` returns goes after it, because a list that starts anywhere else answers a caller from
@@ -75,8 +78,6 @@ def answering_from_the_root(
 
     def candidates(key: ComponentKey, identity: ComponentIdentity, /) -> tuple[ComponentKey, ...]:
         asked = ComponentKey(identity, key.instance)
-        if not key.instance:
-            return (asked,)
         places = [asked]
         if below is not None:
             for place in below(key, identity):

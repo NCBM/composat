@@ -112,7 +112,8 @@ out of every other identity's way. Places are read in the order the list is buil
 qualifier, then what `below` derives, then the root — and `Assembly.start` closes over that same list,
 so an account a read would fall back to comes up with its dependant. Nothing else is widened: `only=`
 still says which identities may cross to the root, and every place is a place of the same identity — a
-sibling is never one.
+sibling is never one. An asker at the empty qualifier is asked of `below` like any other: its own place is
+the root, and a table keyed by identity reaches a component declared there.
 
 What a rule derives is a list of places, and putting an instance at one is the manifest's: the
 qualifier is written on the declaration, and the constructor's arguments with it.
