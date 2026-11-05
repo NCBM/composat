@@ -1,0 +1,8 @@
+# Both workflows name a major tag rather than a commit, so a patch lands without a change here. What
+# this watches for is the next major: the Node runtime an action declares, and the API it expects.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
