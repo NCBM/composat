@@ -48,9 +48,10 @@ the case where *not* having unregistered is the true picture, because the thing 
 ## A refused teardown is reported, not retried
 
 `replace` reports the old generation's refusal against the key (`Replacement.failed`) and moves on; the
-key answers the new generation either way. What a raising `drain` or `unload` leaves behind is a retired
-generation still holding something nothing in the table names — a leak to look at, not a move to repeat.
-Each step is driven once and reported, so a hook must not retry what the one before it could not do.
+key answers the new generation either way, and a loader's `SwapResult.reported` carries the same
+`Replacement`. What a raising `drain` or `unload` leaves behind is a retired generation still holding
+something nothing in the table names — a leak to look at, not a move to repeat. Each step is driven once
+and reported, so a hook must not retry what the one before it could not do.
 
 ## `provider_changed` runs after the move, and cannot change it
 

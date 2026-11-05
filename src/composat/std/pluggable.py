@@ -52,6 +52,7 @@ from composat import (
     ComponentIdentity,
     ComponentKey,
     Declaration,
+    Replacement,
     Unit,
     components_of,
     fingerprint_of,
@@ -96,6 +97,11 @@ class SwapResult:
     is the manifest's business rather than this one's. ``failed`` is what ``replace`` raised for a key —
     a generation the registry will not take, a new instance that would not come up.
 
+    ``reported`` holds the keys that swapped and did not settle cleanly, with the
+    :class:`~composat.Replacement` ``replace`` answered: a retired generation that would not let go, a
+    dependant whose ``provider_changed`` raised, an ``enable`` that refused. The key serves the new
+    generation in all three cases, so a swap is not a verdict — what did not happen beside it is.
+
     A key left alone is in none of them: one that belongs to another unit, and one already running the
     class the current generation holds. Reported rather than raised, key by key, because a unit is not
     one decision — one component whose new text is wrong is that component's problem, and the rest of
@@ -105,6 +111,7 @@ class SwapResult:
     swapped: tuple[ComponentKey, ...] = ()
     unmatched: tuple[ComponentKey, ...] = ()
     failed: Mapping[ComponentKey, BaseException] = field(default_factory=dict[ComponentKey, BaseException])
+    reported: Mapping[ComponentKey, Replacement] = field(default_factory=dict[ComponentKey, Replacement])
 
 
 def reload_module(name: str, *, scope: Collection[str]) -> ReloadResult:
@@ -528,9 +535,10 @@ class UnitLoader(Component):
         :attr:`SwapResult.unmatched` rather than guessed at. A key already running the current class is
         passed over, so calling this after every reload is safe, including for one already swapped.
 
-        Everything is reported rather than raised, key by key. One generation the registry will not
-        take — a type that now asks for something else — is that key's failure, and the others still
-        move. A cancelled swap stops where it is: cancellation is not a per-key outcome.
+        Everything is reported rather than raised, key by key: one generation the registry will not take
+        — a type that now asks for something else — is that key's failure, and the others still move. A
+        key that swapped without settling cleanly is in ``reported``, which :class:`SwapResult` reads. A
+        cancelled swap stops where it is: cancellation is not a per-key outcome.
         """
         generation = self._generations.get(name)
         if generation is None:
@@ -539,6 +547,7 @@ class UnitLoader(Component):
         swapped: list[ComponentKey] = []
         unmatched: list[ComponentKey] = []
         failed: dict[ComponentKey, BaseException] = {}
+        reported: dict[ComponentKey, Replacement] = {}
         # The keys as they were when the swap started: replacing one moves the table, and this walks the
         # picture it took rather than a picture that changes under it.
         keys = assembly.keys()
@@ -558,12 +567,14 @@ class UnitLoader(Component):
             declared = assembly.declaration(key)
             fresh = Declaration(current, instance=declared.instance, args=declared.args, kwargs=declared.kwargs)
             try:
-                _ = await assembly.replace(key, fresh)
+                outcome = await assembly.replace(key, fresh)
             except Exception as error:  # noqa: BLE001 - one key's failure is reported, not raised
                 failed[key] = error
                 continue
+            if isinstance(outcome, Replacement):
+                reported[key] = outcome
             swapped.append(key)
-        return SwapResult(tuple(swapped), tuple(unmatched), failed)
+        return SwapResult(tuple(swapped), tuple(unmatched), failed, reported)
 
 
 def _belongs(identity: ComponentIdentity, name: str) -> bool:

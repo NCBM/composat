@@ -25,6 +25,7 @@ from composat import (
     ComponentIdentity,
     ComponentKey,
     ComponentRegistry,
+    ComponentState,
     Declaration,
     Unit,
     requirements_of,
@@ -127,6 +128,22 @@ class Alpha(Component):
 
 class Gamma(Component):
     pass
+"""
+
+_ALPHA_REFUSING_DRAIN = """
+from composat import Component
+
+class Alpha(Component):
+    async def drain(self) -> None:
+        raise RuntimeError("still busy")
+"""
+
+_ALPHA_REFUSING_ENABLE = """
+from composat import Component
+
+class Alpha(Component):
+    async def enable(self) -> None:
+        raise RuntimeError("not ready")
 """
 
 
@@ -383,6 +400,50 @@ class TestSwappingInstances:
 
         assert list(result.failed) == [key]
         assert type(assembly.instance(key)) is alpha
+
+    def test_a_retired_generation_that_will_not_let_go_is_reported(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA_REFUSING_DRAIN)
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha))
+        _ = run(assembly.start(key))
+        old = assembly.instance(key)
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_EDITED)
+        _ = loader.reload_module("alpha")
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        # The key moved, so it is swapped and not failed; what did not happen is the part reported.
+        assert result.swapped == (key,)
+        assert result.failed == {}
+        outcome = result.reported[key]
+        assert list(outcome.failed) == [key]
+        assert outcome.published is None
+        assert outcome.instance is assembly.instance(key)
+        assert old is not None
+        assert old.state.state is ComponentState.ENABLED
+
+    def test_a_new_generation_whose_enable_refuses_is_reported_as_unpublished(self, dropins: Path) -> None:
+        _ = module_at(dropins, "alpha.py", _ALPHA)
+        loader = loaded(dropins)
+        alpha = only_component(loader, "alpha")
+        key = at(alpha)
+        assembly = wired(Declaration(alpha))
+        _ = run(assembly.start(key))
+
+        _ = module_at(dropins, "alpha.py", _ALPHA_REFUSING_ENABLE)
+        _ = loader.reload_module("alpha")
+        result = run(loader.swap_instances(assembly, "alpha"))
+
+        assert result.swapped == (key,)
+        assert result.failed == {}
+        outcome = result.reported[key]
+        assert isinstance(outcome.published, RuntimeError)
+        assert outcome.failed == {}
+        served = assembly.instance(key)
+        assert served is not None
+        assert served.state.state is ComponentState.LOADED
 
     def test_a_name_this_loader_does_not_hold_is_refused(self, dropins: Path) -> None:
         _ = module_at(dropins, "alpha.py", _ALPHA)

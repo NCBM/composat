@@ -9,7 +9,7 @@ four shapes that make a reload look right and behave wrong.
 |---|---|---|
 | `loader.stale()` | the units whose source no longer says what is running | when to look, how to debounce |
 | `loader.reload_module(name)` | the new `Unit`, the modules whose bindings moved, the types whose requirements changed | nothing — but nothing is serving the new code yet |
-| `loader.swap_instances(assembly, name)` | `swapped`, `unmatched`, `failed` | `unmatched`: the keys the edit no longer has a class for |
+| `loader.swap_instances(assembly, name)` | `swapped`, `unmatched`, `failed`, `reported` | `unmatched`: the keys the edit no longer has a class for; `reported`: the keys that moved and did not settle cleanly |
 
 The middle step moves the *module*; the third moves the *instances*. An instance keeps the class it was
 built with, so a host that reloads and stops there has new code in `sys.modules` and the old code still
@@ -110,3 +110,9 @@ decide whether both generations are worth running.
 is safe; `failed` is per key, so one generation the registry will not take does not stop the others. What
 it will not do is take a key `stop` is already moving: the key is spoken for, and the swap reports a
 `KeyInTransitError` for it rather than racing the teardown ([the retry a host needs](driving-a-running-deployment.md#every-verb-is-one-writer-so-a-host-must-retry)).
+
+`failed` holds what `replace` **raised**. A key that swapped and did not settle cleanly is in
+`reported`, with the `Replacement` the assembly answered with: the retired generation that would not let
+go, a dependant whose `provider_changed` raised, an `enable` that refused, and the instance is the new
+one in every case. Such a key is in `swapped` too, because it did move — read the two maps together, and
+take the field-by-field reading from `SwapResult`.
