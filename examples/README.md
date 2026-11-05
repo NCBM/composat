@@ -20,3 +20,7 @@ cases — `pdm run pytest` runs them alongside the unit cases in `tests/`.
 | `doubles` | a component driven by a rule of its own, with no assembly at all |
 
 `support.py` holds the two helpers they share, and `conftest.py` takes back the modules a case loaded.
+
+`tenant_swap.py` is the one shape kept in a single module rather than a directory: an account's
+credential swapped under a serving endpoint, the read that lands in the swap's window, and a tenant
+quiesced and evicted on the way out. Its test sits beside it at the root.
