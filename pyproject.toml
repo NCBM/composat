@@ -2,6 +2,7 @@
 name = "composat"
 version = "1.0.0"
 description = "Component lifespan interface"
+keywords = ["asyncio", "component", "dependency-injection", "lifecycle", "plugin", "reload"]
 authors = [
   { name = "HivertMoZara", email = "worldmozara@163.com" },
 ]
@@ -10,6 +11,17 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
 
 [project.urls]
 Homepage = "https://github.com/NCBM/composat"
