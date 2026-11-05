@@ -449,10 +449,13 @@ class UnitLoader(Component):
 
     @override
     async def load(self) -> None:
+        """Record a generation per module directly inside ``root``."""
         self._generations = {unit.module.__name__: _generation_of(unit) for unit in load_units(self.root)}
 
     @override
     async def unload(self) -> None:
+        """Drop the records; removing the imported modules is not this component's to do."""
+        self._generations = {}
         self._generations = {}
 
     def scope(self) -> frozenset[str]:

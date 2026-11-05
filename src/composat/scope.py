@@ -103,11 +103,19 @@ def _report(loop: asyncio.AbstractEventLoop, effect: Disposable, error: BaseExce
 @final
 @dataclass(eq=False, slots=True)
 class EffectScope:
+    """The effects one lifetime registered, released last-registered first and exactly once.
+
+    Closing it releases everything still in it and refuses what comes after; :meth:`reopen` begins the
+    next epoch with nothing held over. A :class:`Revoke` is a checkpoint in the same stack rather than a
+    second container, so what a section of a lifetime registered is the tail after the mark it took.
+    """
+
     _stack: list[Disposable] = field(default_factory=list)
     _dispose_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __len__(self) -> int:
+        """How many effects this scope still holds."""
         return len(self._stack)
 
     @property
@@ -142,6 +150,7 @@ class EffectScope:
             raise ExceptionGroup("Error occurred when recycling effects", gathered)
 
     def put(self, effect: Disposable) -> Revoke:
+        """``effect`` joins the stack, and the answer releases it and everything registered after it."""
         self._test_open()
         checkpoint = len(self._stack)
         self._stack.append(effect)
