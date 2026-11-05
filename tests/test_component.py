@@ -7,7 +7,7 @@ framework decides what to look at.
 
 from __future__ import annotations
 
-from typing import Annotated, Protocol, override
+from typing import TYPE_CHECKING, Annotated, Protocol, override
 
 import pytest
 
@@ -51,6 +51,40 @@ class Named(Component):
     """A requirement whose contract is written at the declaration site, with no annotation."""
 
     store = require(Store)  # pyright: ignore[reportUnannotatedClassAttribute]
+
+
+class Early(Component):
+    """A contract written below its own class: the forward reference Python allows."""
+
+    later: Later = require()
+
+
+class Later(Component):
+    """The contract ``Early`` names before it exists."""
+
+
+class Waiting(Component):
+    """A second forward reference, left unasked so a marker can be installed on it first."""
+
+    later: Later = require()
+
+
+class Unasked(Component):
+    """A third, settled by a read off the class rather than by an ask of the map."""
+
+    later: Later = require()
+
+
+if TYPE_CHECKING:
+
+    class Nowhere:
+        """Read by the checker alone: at runtime the name is absent, which is the case below."""
+
+
+class Orphan(Component):
+    """A name that never resolves: the first ask is where that is reported."""
+
+    ghost: Nowhere = require()
 
 
 class TestClassification:
@@ -215,6 +249,24 @@ class TestLateDeclarations:
 
         Plain.helper = staticmethod(lambda: 1)  # pyright: ignore[reportAttributeAccessIssue]
         assert capabilities_of(Plain) == ()
+
+
+class TestAForwardReference:
+    def test_a_contract_written_below_its_class_is_settled_at_the_first_ask(self) -> None:
+        assert requirements_of(Early) == (RequirementSpec("later", Later),)
+        assert Early.later == RequirementSpec("later", Later)
+
+    def test_a_read_off_the_class_settles_it_too(self) -> None:
+        assert Unasked.later == RequirementSpec("later", Later)
+
+    def test_a_marker_installed_on_a_class_still_waiting_is_refused(self) -> None:
+        Waiting.extra = require()  # pyright: ignore[reportAttributeAccessIssue]
+        with pytest.raises(ValueError, match=r"Waiting was handed extra after it was made"):
+            _ = requirements_of(Waiting)
+
+    def test_a_name_that_never_resolves_fails_at_the_first_ask(self) -> None:
+        with pytest.raises(NameError, match="Nowhere"):
+            _ = requirements_of(Orphan)
 
 
 class TestWhatTheFrameworkReads:

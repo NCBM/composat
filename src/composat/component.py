@@ -20,7 +20,6 @@ not offered to it as a member.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from typing import Annotated, ClassVar, Protocol, cast, final, get_args, get_origin, get_type_hints
 
@@ -119,12 +118,27 @@ class _Bound:
         return self.spec
 
     def __get__(self, instance: Component | None, owner: type[object] | None = None) -> object:
+        if self.spec is None and instance is None and owner is not None:
+            self._settle_on(owner)
         if self.spec is None:
             where = "a class" if owner is None else owner.__qualname__
             raise ValueError(f"{where} was handed a requirement after it was made: declare it in the class body")
         if instance is None:
             return self.spec
         return read(instance, self.spec)
+
+    def _settle_on(self, owner: type[object]) -> None:
+        """Settle the class whose body wrote this marker, so a class-level read answers what a settled
+        field answers.
+
+        A read off the class is the ask a tool makes to see what a field declares, and it settles a
+        class the same way :meth:`_requirements_of` does. A marker no class in ``owner``'s MRO wrote was
+        installed on a finished class, so it is left unsettled for the refusal below to name.
+        """
+        for klass in owner.__mro__:
+            if any(value is self for value in _own_fields(klass).values()):
+                _ = cast("type[Component]", klass)._requirements_of()  # pyright: ignore[reportPrivateUsage]
+                return
 
     def __set__(self, instance: Component, value: object) -> None:
         field = "this field" if self.spec is None else self.spec.name
@@ -236,6 +250,10 @@ class Component:
     #: both without walking anything.
     _declared: ClassVar[dict[str, RequirementSpec] | None] = None
 
+    #: The markers the class body wrote, recorded only when settling had to wait for a name defined
+    #: further down the module; the first ask settles these and no marker added since.
+    _deferred: ClassVar[tuple[str, ...] | None] = None
+
     effect_scope: EffectScope
 
     #: Where this instance is in its lifecycle, and the lock its moves run under. One per instance,
@@ -255,12 +273,16 @@ class Component:
 
         An annotation naming a class defined further down the module does not resolve while its own
         class is still being built, and Python allows that forward reference. Such a class stays
-        unsettled and is settled at its first ask, when everything the module defines exists.
+        unsettled, and what its body wrote is recorded here: the first ask settles those markers once
+        the module has finished, and a marker installed after that is refused rather than mistaken for
+        one of them.
         """
         super().__init_subclass__(**kwargs)
-        with contextlib.suppress(NameError):
-            # A forward reference. It resolves at the first ask, or fails loudly there.
+        try:
             cls._classify()
+        except NameError:
+            # A forward reference. It resolves at the first ask, or fails loudly there.
+            cls._deferred = tuple(name for name, value in _own_fields(cls).items() if isinstance(value, _Bound))
 
     def __init__(self) -> None:
         # An instance is born inside an epoch rather than acquiring one on ``load``.
@@ -271,15 +293,19 @@ class Component:
     def _requirements_of(cls) -> dict[str, RequirementSpec]:
         """The requirements of ``cls``, settled once: what it inherited, then what it declares.
 
+        A class whose settle waited for a name is settled here first: the first ask is where that name
+        resolves, and checking the markers before settling would refuse a class that is nothing but a
+        forward reference.
+
         A marker that never got a record is refused on every ask, which puts the refusal where a
         reader would otherwise be misled: a requirement installed on a class that already answered is
         not in the map, so it would be declared, never ordered, never resolved.
         """
-        cls._require_settled()
         if cls is Component:
             return {}
         if cls.__dict__.get("_declared") is None:
             cls._classify()
+        cls._require_settled()
         return cast("dict[str, RequirementSpec]", cls._declared)
 
     @classmethod
@@ -294,9 +320,13 @@ class Component:
         Only the fields this class's own body marks are settled here: a base settled its own when it
         was made, and re-settling it would rewrite a shared descriptor. A class that marks nothing
         reads no annotation at all, so an ordinary field naming something odd is none of this ask's
-        business.
+        business. A class whose first settle was deferred settles the fields its body wrote and no
+        more, so the retry cannot adopt a marker installed on the finished class.
         """
         own = {name: value for name, value in _own_fields(cls).items() if isinstance(value, _Bound)}
+        deferred = cast("tuple[str, ...] | None", cls.__dict__.get("_deferred"))
+        if deferred is not None:
+            own = {name: own[name] for name in deferred if name in own}
         if not own:
             cls._declared = dict(cls._inherited())
             return
