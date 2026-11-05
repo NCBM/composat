@@ -129,6 +129,21 @@ class Objecting(Watching):
         raise RuntimeError("not now")
 
 
+class Told(Component):
+    """A dependant whose being told waits on a gate, so a case can hold the notify walk."""
+
+    store: Store = require()
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+
+    @override
+    async def provider_changed(self, requirement: RequirementSpec) -> None:
+        _ = requirement
+        Told.entered.set()
+        await Told.opening.wait()
+
+
 class Steady(Component):
     """A leaf whose replacement generation is the one that will not come up."""
 
@@ -213,13 +228,72 @@ class Shy(Component):
         await Shy.opening.wait()
 
 
+class Sinking(Component):
+    """The same at ``drain``: the step of a teardown a cancellation can leave a key stuck in."""
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+    released: ClassVar[list[str]] = []
+
+    @override
+    async def load(self) -> None:
+        _ = self.effect_scope.put(lambda: Sinking.released.append("released"))
+
+    @override
+    async def drain(self) -> None:
+        Sinking.entered.set()
+        await Sinking.opening.wait()
+
+
+class Listening(Component):
+    """A dependant on a component that will not let go, whose being told waits on a gate."""
+
+    sticky: Sticky = require()
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+
+    @override
+    async def provider_changed(self, requirement: RequirementSpec) -> None:
+        _ = requirement
+        Listening.entered.set()
+        await Listening.opening.wait()
+
+
+class Logged(Component):
+    """A leaf that writes itself down as it is torn down, so a case can read the order it went in."""
+
+    log: ClassVar[list[int]] = []
+
+    @override
+    async def unload(self) -> None:
+        Logged.log.append(id(self))
+
+
+class Noticing(Component):
+    """A dependant on the logged leaf, whose being told waits on a gate."""
+
+    logged: Logged = require()
+
+    entered: ClassVar[asyncio.Event] = asyncio.Event()
+    opening: ClassVar[asyncio.Event] = asyncio.Event()
+
+    @override
+    async def provider_changed(self, requirement: RequirementSpec) -> None:
+        _ = requirement
+        Noticing.entered.set()
+        await Noticing.opening.wait()
+
+
 def fresh_gates() -> None:
     """A pair of gates per case: ``entered`` is what the case waits on, ``opening`` what it opens."""
 
-    for gated in (Held, Lingering, Shy):
+    for gated in (Held, Lingering, Shy, Sinking, Told, Listening, Noticing):
         gated.entered = asyncio.Event()
         gated.opening = asyncio.Event()
     Held.built = 0
+    Logged.log = []
+    Sinking.released = []
 
 
 async def refusing_load(_self: Component) -> None:
@@ -654,6 +728,116 @@ class TestGoingDown:
         assert isinstance(result.failed[at(Sticky)], RuntimeError)
         assert assembly.keys() == ()
 
+    def test_a_teardown_cancelled_while_a_key_drains_is_paid_by_the_next_stop(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Sinking)))
+            _ = await assembly.start(at(Sinking))
+            doomed = assembly.instance(at(Sinking))
+            assert doomed is not None
+
+            going_down = asyncio.create_task(assembly.stop(at(Sinking)))
+            await Sinking.entered.wait()
+            _ = going_down.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await going_down
+
+            # The key stopped answering before its hooks ran, so what is left is a debt: still listed,
+            # answering nothing, and paid by the host's one call.
+            assert assembly.keys() == (at(Sinking),)
+            assert assembly.keys(owing=False) == ()
+            assert assembly.instance(at(Sinking)) is None
+
+            Sinking.opening.set()
+            _ = await assembly.stop(*assembly.keys())
+
+            assert doomed.state.state is ComponentState.UNLOADED
+            assert assembly.keys() == ()
+
+        run(scenario())
+
+    def test_a_generation_that_will_not_let_go_does_not_keep_the_key_from_going_down(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Sticky), Declaration(Listening)))
+            _ = await assembly.start(at(Sticky), at(Listening))
+            refusing = assembly.instance(at(Sticky))
+            assert refusing is not None
+
+            swapping = asyncio.create_task(assembly.replace(at(Sticky), Declaration(generation("Sticky"))))
+            await Listening.entered.wait()
+            _ = swapping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await swapping
+
+            # What the swap left owing refuses to let go; the generation that took the key over has to
+            # go down all the same, or one broken hook keeps a live instance under a dead key.
+            successor = assembly.instance(at(Sticky))
+            assert successor is not None
+            result = await assembly.stop(*assembly.keys())
+
+            assert isinstance(result.failed[at(Sticky)], RuntimeError)
+            assert refusing.state.state is ComponentState.UNLOADED
+            assert successor.state.state is ComponentState.UNLOADED
+            assert assembly.keys() == ()
+
+        run(scenario())
+
+    def test_every_generation_that_refuses_to_let_go_is_kept_on_the_first_refusal(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Sticky), Declaration(Listening)))
+            _ = await assembly.start(at(Sticky), at(Listening))
+            stubborn = generation("Sticky", unload=Sticky.unload)
+
+            for _ in range(2):
+                Listening.entered, Listening.opening = asyncio.Event(), asyncio.Event()
+                swapping = asyncio.create_task(assembly.replace(at(Sticky), Declaration(stubborn)))
+                await Listening.entered.wait()
+                _ = swapping.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await swapping
+
+            result = await assembly.stop(*assembly.keys())
+
+            # The first refusal is the one raised at the caller; the two behind it are kept on its
+            # chain rather than dropped.
+            error: BaseException | None = result.failed[at(Sticky)]
+            chain: list[BaseException] = []
+            while error is not None:
+                chain.append(error)
+                error = error.__context__
+            assert len(chain) == 3
+            assert all(isinstance(refusal, RuntimeError) for refusal in chain)
+
+        run(scenario())
+
+    def test_the_teardown_a_key_owes_goes_down_before_the_one_it_answers_with(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Logged), Declaration(Noticing)))
+            _ = await assembly.start(at(Logged), at(Noticing))
+            old = assembly.instance(at(Logged))
+            assert old is not None
+
+            swapping = asyncio.create_task(
+                assembly.replace(at(Logged), Declaration(generation("Logged", unload=Logged.unload)))
+            )
+            await Noticing.entered.wait()
+            _ = swapping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await swapping
+
+            successor = assembly.instance(at(Logged))
+            assert successor is not None
+            _ = await assembly.stop(*assembly.keys())
+
+            # The debt goes down in the order the instances stopped answering, which is the order the
+            # moves would have happened in, so the generation the abandoned swap left goes first.
+            assert Logged.log == [id(old), id(successor)]
+
+        run(scenario())
+
 
 class TestArrivingAndLeaving:
     def test_an_admitted_key_is_declared_and_serving(self) -> None:
@@ -1038,6 +1222,98 @@ class TestSwapping:
         assert isinstance(result, Replacement)
         assert isinstance(result.failed[at(Objecting)], RuntimeError)
         assert assembly.instance(at(Store)) is result.instance
+
+    def test_a_swap_cancelled_while_the_dependants_are_told_still_tears_the_old_one_down(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Store), Declaration(Told)))
+            _ = await assembly.start(at(Store), at(Told))
+            old = assembly.instance(at(Store))
+            assert old is not None
+
+            swapping = asyncio.create_task(assembly.replace(at(Store), Declaration(generation("Store"))))
+            await Told.entered.wait()
+            _ = swapping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await swapping
+
+            # The arrival was committed before the walk, so the key answers the new generation, at the
+            # level the old one served at, with nothing moving — and the teardown this call never got
+            # to is still the table's, or nothing a host can call would reach the epoch it holds.
+            assert assembly.in_transit(at(Store)) is None
+            assert state_of(assembly, at(Store)) is ComponentState.LOADED
+            assert old.state.state is ComponentState.ENABLED
+            # The key answers and owes at once, which is the one shape the two lists differ on.
+            assert assembly.keys() == (at(Store), at(Told))
+            assert assembly.keys(owing=False) == (at(Store), at(Told))
+
+            _ = await assembly.stop(*assembly.keys())
+
+            assert assembly.keys() == ()
+            assert old.state.state is ComponentState.UNLOADED
+
+        run(scenario())
+
+    def test_a_second_cancelled_swap_at_one_key_is_owed_as_well(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Store), Declaration(Told)))
+            _ = await assembly.start(at(Store), at(Told))
+            displaced = [assembly.instance(at(Store))]
+
+            for _ in range(2):
+                Told.entered, Told.opening = asyncio.Event(), asyncio.Event()
+                swapping = asyncio.create_task(assembly.replace(at(Store), Declaration(generation("Store"))))
+                await Told.entered.wait()
+                _ = swapping.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await swapping
+                displaced.append(assembly.instance(at(Store)))
+
+            _ = await assembly.stop(*assembly.keys())
+
+            # Each abandoned swap owes its own generation, so the table keeps a list rather than a
+            # slot: the second cancellation must not overwrite what the first one left behind.
+            for instance in displaced:
+                assert instance is not None
+                assert instance.state.state is ComponentState.UNLOADED
+
+        run(scenario())
+
+    def test_a_swap_cancelled_while_the_old_one_drains_leaves_it_owed(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Sinking)))
+            _ = await assembly.start(at(Sinking))
+            old = assembly.instance(at(Sinking))
+            assert old is not None
+
+            swapping = asyncio.create_task(assembly.replace(at(Sinking), Declaration(generation("Sinking"))))
+            await Sinking.entered.wait()
+            _ = swapping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await swapping
+
+            # The commit happened, so the key answers the new generation and the walk was over; what
+            # the cancellation cut is the old generation's drain, which is a teardown that did not
+            # finish and therefore a debt.
+            successor = assembly.instance(at(Sinking))
+            assert successor is not None
+            assert successor is not old
+            assert old.state.state is not ComponentState.UNLOADED
+            assert Sinking.released == []
+            assert assembly.keys() == (at(Sinking),)
+
+            # The teardown resumes where the cancellation cut it, which means this instance's drain is
+            # entered again: the gate has to open for the retry, as it would have for the first call.
+            Sinking.opening.set()
+            _ = await assembly.stop(*assembly.keys())
+
+            assert old.state.state is ComponentState.UNLOADED
+            assert Sinking.released == ["released"]
+            assert assembly.keys() == ()
+
+        run(scenario())
 
     def test_a_declaration_that_names_another_key_is_refused(self) -> None:
         assembly = Assembly(declaring(Declaration(Store)))

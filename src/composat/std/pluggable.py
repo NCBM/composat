@@ -551,11 +551,13 @@ class UnitLoader(Component):
         failed: dict[ComponentKey, BaseException] = {}
         reported: dict[ComponentKey, Replacement] = {}
         # The keys as they were when the swap started: replacing one moves the table, and this walks the
-        # picture it took rather than a picture that changes under it.
-        keys = assembly.keys()
+        # picture it took rather than a picture that changes under it. Only the keys that answer: a key
+        # the table owes a teardown has no generation to move, and one another call takes down while this
+        # walks is passed over by the read below.
+        keys = assembly.keys(owing=False)
         for key in keys:
             instance = assembly.instance(key)
-            if instance is None:  # pragma: no cover - a key the table named is one it holds
+            if instance is None:
                 continue
             identity = ComponentIdentity.of(type(instance))
             if not _belongs(identity, name):

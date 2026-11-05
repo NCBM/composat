@@ -319,6 +319,34 @@ def _level_of(state: ComponentState) -> ComponentState:
     return ComponentState.ENABLED if state is ComponentState.ENABLED else ComponentState.LOADED
 
 
+def _chain(head: BaseException | None, extra: BaseException | None, /) -> BaseException | None:
+    """``head`` with ``extra`` hung on the end of the chain it already carries; whichever there is.
+
+    One key's debt is several teardowns and one error: the first is what the caller acts on, and the
+    rest are hung on its tail — read off ``__context__``, the way Python reads a raised one — rather
+    than dropped. Linking stops where it would close a loop, since a traceback that walks in a circle
+    is worse than a short chain.
+    """
+    if head is None:
+        return extra
+    if extra is None:
+        return head
+    known = {id(head)}
+    tail = head
+    while tail.__context__ is not None and id(tail.__context__) not in known:
+        tail = tail.__context__
+        known.add(id(tail))
+    if tail.__context__ is not None:
+        return head
+    later: BaseException | None = extra
+    while later is not None:
+        if id(later) in known:
+            return head
+        later = later.__context__
+    tail.__context__ = extra
+    return head
+
+
 @final
 class Assembly:
     """The instances this process has up, the rule they reach each other by, and the two batch verbs.
@@ -370,6 +398,7 @@ class Assembly:
         self._manager = ComponentManager() if manager is None else manager
         self._up = {} if up is None else up
         self._moving = {}
+        self._owed: dict[ComponentKey, list[Component]] = {}
         self._rule = default_rule(registry, self._up) if rule is None else rule
         self._places = self._rule.places if isinstance(self._rule, Policy) else _own_qualifier
         self._subscribers = []
@@ -391,7 +420,8 @@ class Assembly:
 
         This is the reading that answers "what does that key answer *now*", which is a read rather
         than a history: subscribing to a running assembly replays nothing, and the current picture is
-        this method together with :meth:`keys`.
+        this method together with :meth:`keys`. ``None`` for a key the table owes a teardown as well —
+        it has stopped answering, and :meth:`keys` is what still lists it.
         """
         return self._up.get(key)
 
@@ -399,9 +429,17 @@ class Assembly:
         """Every instance that is up, in the order it came up."""
         return tuple(self._up.values())
 
-    def keys(self) -> tuple[ComponentKey, ...]:
-        """Every key that is up, in the order it came up."""
-        return tuple(self._up)
+    def keys(self, *, owing: bool = True) -> tuple[ComponentKey, ...]:
+        """Every key this assembly holds: the ones that are up, then the ones it still owes a teardown.
+
+        A key in the second half answers nothing (:meth:`instance`), so "listed here and answering
+        nothing" is what a debt looks like from outside, and :meth:`stop` is where it is paid.
+        ``owing=False`` drops that half, for a caller that iterates the table as what answers.
+        """
+        if not owing:
+            return tuple(self._up)
+        owed = tuple(key for key in self._owed if key not in self._up)
+        return (*self._up, *owed)
 
     def in_transit(self, key: ComponentKey) -> Claim | None:
         """What a call is doing to ``key`` right now, or ``None`` when nothing is.
@@ -493,9 +531,11 @@ class Assembly:
 
         Keys that are not up are passed over — nothing is done to them, so they are in neither tuple of
         the result — and an empty batch reports exactly that, which is what makes ``finally: await
-        stop(*assembly.keys())`` the teardown a caller can run without asking first. Ordering comes
-        from the registry, and everything else from the instances this assembly holds, so a key whose
-        declaration was withdrawn on the way is still taken down.
+        stop(*assembly.keys())`` the teardown a caller can run without asking first. A key the assembly
+        owes a teardown, one whose shutdown was cancelled halfway, is paid here rather than passed
+        over: :meth:`keys` lists it for exactly that reason. Ordering comes from the registry, and
+        everything else from the instances this assembly holds, so a key whose declaration was
+        withdrawn on the way is still taken down.
 
         Events are delivered per key, as each one finishes going down, so a shutdown that is still
         running is already readable.
@@ -653,6 +693,13 @@ class Assembly:
 
         The key is spoken for from before the registry is touched until the swap is done, so a stop or
         a batch that named it is refused rather than finding it half replaced.
+
+        A cancellation lands somewhere inside that walk, and where it lands is what it leaves. Before
+        the commit, nothing happened. After it, the key answers the new generation at the level the old
+        one served at, and the generation it displaced stays recorded rather than dropped: a ``stop``
+        naming the key tears both down, so an abandoned swap still leaves a table a host can shut down
+        with one call. A dependant the walk had not reached is not told — telling is a notification,
+        and only the application knows whether its handler can hear the same news twice.
         """
         if key not in self._up:
             raise ValueError(f"nothing is up under {key}")
@@ -915,12 +962,18 @@ class Assembly:
         return AssemblyResult(tuple(completed), failed, tuple(watched))
 
     async def _take_down_each(self, keys: Iterable[ComponentKey]) -> AssemblyResult:
-        """Walk ``keys`` dependants first, reporting each as it finishes going down."""
+        """Walk ``keys`` dependants first, reporting each as it finishes going down.
+
+        A key that is only a debt — the table stopped answering it, and a cancelled teardown never
+        finished — is walked as well, so one call pays what the table owes.
+        """
         completed: list[ComponentKey] = []
         failed: dict[ComponentKey, BaseException] = {}
         watched: list[tuple[Event, BaseException]] = []
         with self._staging() as staged:
-            for key in _in_order((key for key in keys if key in self._up), self._registry.reverse_order()):
+            for key in _in_order(
+                (key for key in keys if key in self._up or key in self._owed), self._registry.reverse_order()
+            ):
                 try:
                     error = await self._retract(key)
                 finally:
@@ -974,9 +1027,14 @@ class Assembly:
                     self._registry.redeclare(superseded)
                     _ = await self._shutdown(instance)
                     raise
+                self._owe(key, old)
                 self._up[key] = instance
                 failed = await self._notify(key.identity, excluding=key)
                 error = await self._shutdown(old)
+                # Discharged only once the teardown has returned, and not in a `finally`: a cancellation
+                # in `drain` or `disable` leaves the old generation owed, which is what the next `stop`
+                # pays. Discharging it here would make the epoch it holds unreachable (ADR 0008).
+                self._discharge(key, old)
                 if error is not None:
                     failed[key] = error
                 if publish is ComponentState.ENABLED:
@@ -1015,18 +1073,44 @@ class Assembly:
             _ = await self._retract(key)
             raise
 
-    async def _retract(self, key: ComponentKey) -> BaseException | None:
-        """Forget ``key`` and take its instance down; the error when a hook refused to let it go.
+    def _owe(self, key: ComponentKey, instance: Component) -> None:
+        """Record ``instance`` as one ``key`` no longer answers and still owes a teardown.
 
-        The key stops answering before the hooks run, so a dependant reading it during the teardown
-        sees a miss rather than an instance on its way out. The error is *returned* rather than
-        raised, because this also runs on failure paths, where the error that brought us here is the
-        caller's business and a second one would replace it.
+        Written in the same step as the removal it accompanies, so no cancellation can fall between
+        the two and leave a live instance nothing names; :meth:`_retract` is what drives everything
+        owed under ``key`` down.
         """
+        self._owed.setdefault(key, []).append(instance)
+
+    def _discharge(self, key: ComponentKey, instance: Component) -> None:
+        """Stop owing the teardown of ``instance`` at ``key``: it has let go."""
+        owed = self._owed.get(key)
+        if owed is None:
+            return
+        remaining = [other for other in owed if other is not instance]
+        if remaining:
+            self._owed[key] = remaining
+        else:
+            del self._owed[key]
+
+    async def _retract(self, key: ComponentKey) -> BaseException | None:
+        """Take down what ``key`` has up, and everything the table still owes under it.
+
+        The instance stops answering before its hooks run, so a dependant reading the key during the
+        teardown sees a miss rather than an instance on its way out.
+
+        Every owed instance is driven down even after one refuses to let go, and each refusal after the
+        first goes on the first one's chain (:func:`_chain`): this also runs on failure paths, where the
+        error that brought us here is the caller's business and must not be replaced by a later one.
+        """
+        error: BaseException | None = None
         instance = self._up.pop(key, None)
-        if instance is None:
-            return None
-        return await self._shutdown(instance)
+        if instance is not None:
+            self._owe(key, instance)
+        for owed in tuple(self._owed.get(key, ())):
+            error = _chain(error, await self._shutdown(owed))
+            self._discharge(key, owed)
+        return error
 
     async def _shutdown(self, instance: Component) -> BaseException | None:
         """Drive one instance all the way down; the error when a hook refused."""
