@@ -1,6 +1,6 @@
 [project]
 name = "composat"
-version = "1.0.1"
+version = "1.0.2"
 description = "Component lifespan interface"
 keywords = ["asyncio", "component", "dependency-injection", "lifecycle", "plugin", "reload"]
 authors = [
