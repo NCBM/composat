@@ -150,8 +150,8 @@ recorded in `docs/adr/`, each with the alternatives it turned down.
 ## The gate
 
 The checks a change has to pass are the ones in
-[`.github/workflows/checks.yml`](.github/workflows/checks.yml); `pdm install -G dev` at the root
-installs what they need.
+[`.github/workflows/checks.yml`](https://github.com/NCBM/composat/blob/main/.github/workflows/checks.yml);
+`pdm install -G dev` at the root installs what they need.
 
 ## Documentation
 
