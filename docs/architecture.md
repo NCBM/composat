@@ -49,8 +49,11 @@ reading them in this order means never meeting a symbol that has not been introd
 
 ## What holds across the modules
 
-1. **The table is the only record of what is up.** One instance per key
-   ([ADR 0003](adr/0003-a-key-is-an-address.md)).
+1. **The table is the only record of what is up, and of what it still owes.** One instance per key
+   ([ADR 0003](adr/0003-a-key-is-an-address.md)), plus one list per key of the instances it dropped and
+   still has to shut down ([ADR 0008](adr/0008-an-instance-the-table-dropped-stays-the-tables-to-shut-down.md)).
+   `Assembly.keys` reads both as one list; `keys(owing=False)` and `Assembly.instance` are how a caller
+   tells what answers from what is owed.
 2. **A key has one writer.** A verb claims the keys it names and the keys it derives, for as long as it
    works on them; a second call is refused, not queued ([ADR 0005](adr/0005-one-writer-per-key.md)).
 3. **An effect belongs to the innermost lifetime it is registered in.** A read during a call registers
@@ -70,7 +73,9 @@ reading them in this order means never meeting a symbol that has not been introd
 8. **A key is either being moved or at rest, and the table says which.** A verb's claim is readable
    (`Assembly.in_transit`), and it carries the level the move ends at, so a reader that found a level
    it cannot use can tell a key that is about to answer from one that is going away — and only the
-   first is worth waiting for ([ADR 0005](adr/0005-one-writer-per-key.md)).
+   first is worth waiting for ([ADR 0005](adr/0005-one-writer-per-key.md)). A claim goes back with the
+   call that took it, cancelled or not, so an abandoned move leaves its key at rest and answering
+   nothing ([ADR 0008](adr/0008-an-instance-the-table-dropped-stays-the-tables-to-shut-down.md)).
 9. **Only a caller that is serving is policed.** A provider has to be `ENABLED` for a caller that is
    serving, and `ENABLED` or `DRAINING` for one that is draining; everything else — a hook in `load` or
    `unload`, and a key the table does not place at all — reaches whatever the assembly holds. So a

@@ -57,7 +57,7 @@ The verbs are one vocabulary:
 | verb | what it is for |
 |---|---|
 | `start(*keys, enable=True, strict=False)` | the keys named and what they require, built — serving unless told otherwise |
-| `stop(*keys)` | the keys named, taken down; a key that is not up is passed over, so `stop(*assembly.keys())` is the teardown a host runs unconditionally |
+| `stop(*keys)` | the keys named, taken down — including one a cancelled teardown left owing, so `stop(*assembly.keys())` is the teardown a host runs unconditionally |
 | `migrate(*keys, to=level)` | the keys named, moved to a level an assembly holds: `LOADED`, `DRAINING` or `ENABLED` |
 | `enable(*keys)` | that move, to serving |
 | `quiesce(*keys)` | that move, out of service and still built: what `enable` puts back |

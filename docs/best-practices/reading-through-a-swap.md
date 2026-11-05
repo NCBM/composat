@@ -7,16 +7,21 @@ waiting for.
 ## What a read can do
 
 A field marked `require()` is a live read: it asks the assembly's rule at the reader's own key, and the
-answer is whatever is up there *now*. `ServiceNotUpError` carries three fields:
+answer is whatever is up there *now*. `ServiceNotUpError` carries four fields:
 
 | field | says |
 |---|---|
 | `key` | the place the lookup ended at — the provider's key, not the reader's |
 | `asked_from` | the reader, which is what a log line needs |
-| `level` | `None` when nothing is up there at all, otherwise the level the instance rests at |
+| `level` | `None` when there is no instance there, otherwise the level it rests at |
+| `owing` | `True` when the key went down and the assembly still owes its teardown |
 
 A level below serving is not a failure of the deployment: it says that a key is built and not taking
 work. What to do about it is the next question.
+
+`owing` separates the two absences, and neither comes back on its own: a key nothing was ever up under
+wants a declaration and a `start`, while one the assembly owes a teardown is one a host still has to
+finish shutting down ([ADR 0008](../adr/0008-an-instance-the-table-dropped-stays-the-tables-to-shut-down.md)).
 
 ## Wait, or fail?
 
@@ -29,6 +34,7 @@ the two together:
 | below serving | nothing (`in_transit` is `None`) | fail now — nothing is going to change it |
 | below serving | a move ending at `ENABLED` | wait it out, with a deadline |
 | below serving | a move ending anywhere else | fail now — it is on its way out of service |
+| nothing | anything | fail now — nothing is up, whether it was never built or has gone down (`owing`) |
 
 The third row is the swap: `replace` moves the key to the new generation before that generation starts
 serving, so there is a window where the key answers a generation that is built and not serving. The
@@ -57,7 +63,6 @@ Two habits to avoid:
   `serving` is the part with a policy.
 - **Do not turn the deadline into a retry loop.** A swap is one move with one end; polling it makes the
   window longer for the reader and hides which of the four rows above actually happened.
-
 ## What the call's key decides
 
 `open_call(key, rule)` makes `key` the caller for as long as the block runs, and a rule is handed that

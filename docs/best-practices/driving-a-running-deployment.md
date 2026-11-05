@@ -141,7 +141,8 @@ the places, and nothing about the read is wrong.
 
 A host teardown is four steps, and the order is not interchangeable:
 
-1. **`stop(*assembly.keys())`**, inside the retry above: one call takes down everything that is up.
+1. **`stop(*assembly.keys())`**, inside the retry above: one call takes down everything the assembly
+   holds, the keys a cancelled teardown still owes included.
 2. **Drain what your own observers queued.** An observer is synchronous and is handed every move, so a
    sink that writes them down (`put_nowait` into a queue, per ADR 0005) still holds the last
    generation's events after `stop` returns. Those are the `unload`s, and they are the rows a reader of
