@@ -329,22 +329,54 @@ class Component:
             raise ValueError(f"{cls.__qualname__} was handed {', '.join(late)} after it was made: {fix}")
 
     async def load(self) -> None:
-        pass
+        """Take what this instance holds for one epoch: sockets, pools, registrations.
+
+        The state is already ``LOADED`` when this runs, and its requirements answer from the
+        assembly's table as it is now. A hook that raises takes its own step back and nothing else,
+        and the epoch it never opened is released with it.
+        """
 
     async def unload(self) -> None:
-        pass
+        """Let go of what :meth:`load` took.
+
+        The one step no failure takes back: a component that could not release what it held is still
+        down, so reporting it as loaded would be a claim the instance cannot back. Waiting for work
+        still running is :meth:`drain`'s job, and the move reaches this hook only after it.
+        """
 
     async def reload(self) -> None:
-        pass
+        """Rebuild what this instance holds without going out of service.
+
+        It has no arrival: :meth:`~composat.ComponentManager.reload` drives it outside any move, and it
+        ends where it started. The generation does not change — a new class behind a key is
+        :meth:`~composat.Assembly.replace`.
+        """
 
     async def enable(self) -> None:
-        pass
+        """Take new work, and let a caller that is serving read this instance.
+
+        It is the last step of a batch coming up and the publishing step of a swap, so a swap reaches
+        it only after the generation it replaced has let go: a registration made here must not be live
+        twice.
+        """
 
     async def disable(self) -> None:
-        pass
+        """Stop taking new work; work already accepted has finished.
+
+        Reached after :meth:`drain` when a component is coming down, and on its own when the instance
+        is left built: it and everything it holds stay where they are.
+        """
 
     async def drain(self) -> None:
-        pass
+        """Finish what this instance already accepted, and return; the level is ``DRAINING`` meanwhile.
+
+        This is the one hook whose duration is visible from outside: a swap tears the generation it
+        replaced down through this level, so this is how long the key answers a generation that is
+        built and not yet serving, and how long a reader arriving in that window waits
+        (:func:`composat.std.wait.serving`). An ``unload`` that closes a pool under work this hook did
+        not wait for closes it under a caller. A deployment with in-flight work to finish owes this
+        hook a bound; nothing here has a deadline of its own.
+        """
 
     async def provider_changed(self, requirement: RequirementSpec) -> None:
         """A provider this instance declared has been replaced or reloaded under it.
