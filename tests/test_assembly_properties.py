@@ -32,6 +32,7 @@ from composat import (
     ComponentIdentity,
     ComponentKey,
     ComponentRegistry,
+    ComponentState,
     Declaration,
     KeyInTransitError,
 )
@@ -254,7 +255,9 @@ def test_a_second_verb_on_a_claimed_key_is_refused_and_moves_nothing() -> None:
 
         # The claim is readable but not takeable: the second call is refused before it touches
         # anything, and what it would have moved is exactly where the first call left it.
-        assert assembly.in_transit(key) == "being brought up"
+        claim = assembly.in_transit(key)
+        assert claim is not None
+        assert claim.arrival is ComponentState.ENABLED
         with pytest.raises(KeyInTransitError):
             _ = await assembly.quiesce(key)
         instance = assembly.instance(key)

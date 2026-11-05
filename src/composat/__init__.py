@@ -16,6 +16,7 @@ from . import context as context
 from .assembly import Assembly as Assembly
 from .assembly import AssemblyResult as AssemblyResult
 from .assembly import Candidates as Candidates
+from .assembly import Claim as Claim
 from .assembly import Event as Event
 from .assembly import Policy as Policy
 from .assembly import Replacement as Replacement

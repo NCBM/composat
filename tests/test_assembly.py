@@ -1388,23 +1388,43 @@ class TestOneWriterPerKey:
 
 
 class TestWhatIsInTransit:
-    """The claim read from outside: what a batch is doing to a key, and nothing when it rests."""
+    """The claim read from outside: what a batch is doing to a key, and where it is taking it."""
 
-    def test_a_key_a_batch_is_building_is_named_as_being_brought_up(self) -> None:
+    def test_a_key_a_batch_is_building_says_which_level_it_is_going_to(self) -> None:
         async def scenario() -> None:
             fresh_gates()
             assembly = Assembly(declaring(Declaration(Held)))
             building = asyncio.create_task(assembly.start(at(Held)))
             await Held.entered.wait()
 
-            assert assembly.in_transit(at(Held)) == "being brought up"
+            claim = assembly.in_transit(at(Held))
+            assert claim is not None
+            assert claim.doing == "being brought up"
+            assert claim.arrival is ComponentState.ENABLED
             Held.opening.set()
             _ = await building
             assert assembly.in_transit(at(Held)) is None
 
         run(scenario())
 
-    def test_a_key_being_replaced_is_named_for_the_whole_swap(self) -> None:
+    def test_a_batch_told_not_to_serve_a_key_says_where_it_stops(self) -> None:
+        # The level a move ends at is the caller's instruction, and it is the half a reader cannot
+        # work out from the phrase: "being brought up" is a different answer when it stops at LOADED.
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held)))
+            building = asyncio.create_task(assembly.start(at(Held), enable=False))
+            await Held.entered.wait()
+
+            claim = assembly.in_transit(at(Held))
+            assert claim is not None
+            assert claim.arrival is ComponentState.LOADED
+            Held.opening.set()
+            _ = await building
+
+        run(scenario())
+
+    def test_a_key_being_replaced_says_the_level_it_will_answer_at(self) -> None:
         async def scenario() -> None:
             fresh_gates()
             assembly = Assembly(declaring(Declaration(Lingering)))
@@ -1413,11 +1433,34 @@ class TestWhatIsInTransit:
             await Lingering.entered.wait()
 
             # The key answers the new generation and the old one is still going, which is the window
-            # a reader has to be told about: the level it answers at is about to change.
-            assert assembly.in_transit(at(Lingering)) == "being replaced"
+            # a reader has to be told about: the level it answers at is about to change, and the level
+            # it changes to is what makes waiting worth it.
+            claim = assembly.in_transit(at(Lingering))
+            assert claim is not None
+            assert claim.doing == "being replaced"
+            assert claim.arrival is ComponentState.ENABLED
             Lingering.opening.set()
             _ = await swapping
             assert assembly.in_transit(at(Lingering)) is None
+
+        run(scenario())
+
+    def test_a_key_being_taken_down_says_it_is_leaving(self) -> None:
+        # The other half of the reading: a move whose arrival is not ``ENABLED`` is a key on its way
+        # out of service, and a reader that waited for it would be waiting for the level it cannot use.
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Lingering)))
+            _ = await assembly.start(at(Lingering))
+            taking_down = asyncio.create_task(assembly.stop(at(Lingering)))
+            await Lingering.entered.wait()
+
+            claim = assembly.in_transit(at(Lingering))
+            assert claim is not None
+            assert claim.doing == "being taken down"
+            assert claim.arrival is ComponentState.UNLOADED
+            Lingering.opening.set()
+            _ = await taking_down
 
         run(scenario())
 

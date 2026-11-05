@@ -145,7 +145,8 @@ async def main() -> None:
 
     # The window: the key answers a generation that is built and not serving, because the move that
     # would publish it is still running.
-    assert assembly.in_transit(credential_key) is not None
+    claim = assembly.in_transit(credential_key)
+    assert claim is not None and claim.arrival is ComponentState.ENABLED
     refused: ServiceNotUpError | None = None
     try:
         _ = endpoint.complete("during the swap")

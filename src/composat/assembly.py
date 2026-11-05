@@ -74,6 +74,23 @@ class Event:
 type Observer = Callable[[Event], None]
 """What an assembly calls for each event: the record, once, in subscription order, between moves."""
 
+
+@final
+@dataclass(frozen=True, slots=True)
+class Claim:
+    """What a move is doing to one key, and the level it is taking it to.
+
+    ``doing`` is a phrase for a log line or a refusal message, in the verb's own words, and it carries
+    no promise: a caller compares ``arrival``. ``arrival`` is the level the move *ends* at, as the
+    caller asked for it — a swap ends where the generation it replaced was serving, a batch coming up
+    ends where it was told to, a teardown at ``UNLOADED`` — which is what tells a key that is about to
+    answer from a key that is going away.
+    """
+
+    doing: str
+    arrival: ComponentState
+
+
 _STAGED: contextvars.ContextVar[list[Event] | None] = contextvars.ContextVar("composat_staged_events", default=None)
 """What the call now running has staged and not yet delivered.
 
@@ -324,7 +341,7 @@ class Assembly:
     _registry: ComponentRegistry
     _manager: ComponentManager
     _up: dict[ComponentKey, Component]
-    _moving: dict[ComponentKey, str]
+    _moving: dict[ComponentKey, Claim]
     _rule: RequirementResolver
     _places: Candidates
     _subscribers: list[Observer]
@@ -386,19 +403,18 @@ class Assembly:
         """Every key that is up, in the order it came up."""
         return tuple(self._up)
 
-    def in_transit(self, key: ComponentKey) -> str | None:
-        """What a batch is doing to ``key`` right now, or ``None`` when nothing is.
+    def in_transit(self, key: ComponentKey) -> Claim | None:
+        """What a call is doing to ``key`` right now, or ``None`` when nothing is.
 
         The claim is what a verb takes before it moves a key and gives back when it is done, so this
-        is the one reading of a key that is *between* levels rather than at one. A reader that found
-        the key at a level it cannot use asks here whether the level is about to change: a swap is
-        the case that matters, since the generation it published answers at ``LOADED`` until the one
-        it replaced has let go.
+        reads a key that is *between* levels rather than at one. Together with the level the key rests
+        at, it answers what a refused reader needs: whether the level is about to change, and what it
+        is changing to — a move ending at ``ENABLED`` is worth waiting for, and one ending anywhere
+        else is a key on its way out of service.
 
-        ``None`` is the answer for a key at rest and for one the table does not hold at all — nothing
-        is being done to it either way. What makes that worth telling apart is that waiting for a move
-        and waiting for nothing are different questions, and only the first one is answered by a
-        subscription (:func:`composat.std.wait.serving` reads this to refuse the second).
+        ``None`` is the answer for a key at rest and for one the table does not hold at all: nothing
+        is being done to either, so there is nothing to wait for (:func:`composat.std.wait.serving`
+        reads both halves and refuses the rest).
         """
         return self._moving.get(key)
 
@@ -466,7 +482,7 @@ class Assembly:
         rather than racing this one (:class:`~composat.errors.KeyInTransitError`).
         """
         batch = _in_order(self._closed(self._require_startable(keys)), self._registry.order())
-        self._claim(batch, "being brought up")
+        self._claim(batch, "being brought up", ComponentState.ENABLED if enable else ComponentState.LOADED)
         try:
             return await self._bring_up_each(batch, enable=enable, strict=strict)
         finally:
@@ -488,7 +504,7 @@ class Assembly:
         (:class:`~composat.errors.KeyInTransitError`): it is not "nothing is up" — a batch is building
         it, and tearing it down halfway is the one thing the claim exists to prevent.
         """
-        self._claim(keys, "being taken down")
+        self._claim(keys, "being taken down", ComponentState.UNLOADED)
         try:
             return await self._take_down_each(keys)
         finally:
@@ -525,7 +541,7 @@ class Assembly:
         if to not in HELD:
             raise ValueError(f"{to.name} is not a level a held instance is at: that is stop()")
         batch = _in_order(self._require_held(keys), self._order_for(to))
-        self._claim(batch, f"being moved to {to.name}")
+        self._claim(batch, f"being moved to {to.name}", to)
         try:
             return await self._move_each(batch, to)
         finally:
@@ -595,7 +611,7 @@ class Assembly:
             if key not in self._registry:
                 raise KeyError(key)
         self._registry.require_undeclarable(*keys)
-        self._claim(keys, "being taken down")
+        self._claim(keys, "being taken down", ComponentState.UNLOADED)
         try:
             result = await self._take_down_each(keys)
             self._registry.undeclare(*keys)
@@ -642,7 +658,7 @@ class Assembly:
             raise ValueError(f"nothing is up under {key}")
         if declaration.key != key:
             raise ValueError(f"{declaration.key} cannot take over {key}")
-        self._claim((key,), "being replaced")
+        self._claim((key,), "being replaced", _level_of(self._up[key].state.state))
         try:
             return await self._swap(key, declaration)
         finally:
@@ -658,22 +674,24 @@ class Assembly:
         for key in keys:
             moving = self._moving.get(key)
             if moving is not None:
-                raise KeyInTransitError(key, moving)
+                raise KeyInTransitError(key, moving.doing)
 
-    def _claim(self, keys: Iterable[ComponentKey], what: str) -> None:
+    def _claim(self, keys: Iterable[ComponentKey], doing: str, arrival: ComponentState) -> None:
         """Speak for ``keys`` until :meth:`_release`, so no second call moves one of them.
 
         Checked as a set before any of it is written, so a batch refused for one key takes none of
         them — half a claim would be worse than none, since the refused call leaves no way to find out
         which half.
 
-        ``what`` is the phrase a refused caller is told, and it is the verb's own: "being brought up"
-        and "being taken down" are different answers to "can I wait for it".
+        ``doing`` is the phrase a refused caller is told, in the verb's own words. ``arrival`` is the
+        level the call is taking every key to, which is the half a reader branches on; one phrase and
+        one level because one call moves its keys the same way.
         """
         claimed = tuple(keys)
         self._require_idle(claimed)
+        claim = Claim(doing, arrival)
         for key in claimed:
-            self._moving[key] = what
+            self._moving[key] = claim
 
     def _release(self, keys: Iterable[ComponentKey]) -> None:
         """Give up the claim on ``keys``; a key nobody holds is not an error, so this runs in ``finally``."""

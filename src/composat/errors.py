@@ -115,9 +115,10 @@ class KeyInTransitError(RuntimeError):
     A batch speaks for the keys it names, and for the ones it derived along the way, from the moment
     it accepts them until the last of them is done; a second call naming one of them is refused rather
     than queued, because two callers that disagree about whether a tenant should be serving would
-    otherwise be settled by whichever happened to be scheduled second. ``moving`` is what the holder
-    is doing, in the words its verb uses — "being brought up", "being moved to ENABLED" — because
-    that is what says whether waiting on the other call is even the shape of the answer.
+    otherwise be settled by whichever happened to be scheduled second. ``moving`` is a phrase for the
+    message, in the words the holder's verb uses — "being brought up", "being moved to ENABLED" — and
+    it carries no promise: whether waiting on the other call is even the shape of the answer is
+    :meth:`composat.Assembly.in_transit`'s reading, which says where the move is going.
     """
 
     key: ComponentKey

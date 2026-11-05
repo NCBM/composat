@@ -14,7 +14,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The registry turns declarations into identities and an order; the assembly fills a table keyed by
   identity plus qualifier, reports what each batch did, and streams the moves it makes.
 - `start`, `stop`, `migrate`, `enable`, `quiesce`, `admit`, `evict`, `replace` — with one writer per key
-  and a report rather than an exception for anything a component did.
+  and a report rather than an exception for anything a component did; a key being moved is readable
+  while the move runs (`Assembly.in_transit`), together with the level the move ends at.
 - The loader (`load_unit`, `load_units`, `fingerprint_of`); `composat.std`: `UnitLoader` for moving
   loaded modules onto a new generation, `wait.serving`, `root.answering_from_the_root`, and
   `drain.InFlight`.
