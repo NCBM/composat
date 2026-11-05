@@ -159,8 +159,10 @@ def require[T](contract: type[T] | None = None) -> T:
     attribute nobody annotated.
 
     The contract need not be in scope while the class is being made, because no annotation is read
-    then either: a class defined further down the module, or imported only for typing, declares its
-    requirements the same way.
+    then either: a class defined further down the module declares its requirement the same way, and
+    settling waits for the field's first ask. A name that never exists at run time — an import written
+    under ``TYPE_CHECKING`` — is not covered: the annotation is read from the module's own globals, so
+    the first ask reports the ``NameError`` instead.
     """
     return cast("T", _Bound(contract))
 

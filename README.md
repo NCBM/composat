@@ -22,7 +22,8 @@ class Engine(Component):
 A field marked with `require()` is a requirement, and its annotation says what the field reads as.
 Nothing is inferred from the annotation's shape, so an ordinary field stays ordinary. Reading the
 field answers the instance that provides it, at the reader's own key — it is a live read, not a copy
-taken at construction.
+taken at construction. The annotation may name a class defined further down the module: the
+requirement is settled the first time anything asks the class what it requires.
 
 The framework drives six hooks — `load`, `unload`, `reload`, `enable`, `disable`, `drain` — and a type
 that writes none of them is one nothing drives. A hook is written with `@override`, which is also what

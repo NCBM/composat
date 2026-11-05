@@ -33,7 +33,8 @@ must not be able to replace is not offered to it as a member.
 - A requirement that is not written in the body is refused when the class is asked, not silently
   ignored: `_Bound.__set__` raises, and `Component._require_settled` names the late field.
 - A class whose annotation names a class defined further down the module settles at its first ask
-  instead of at class creation.
+  instead of at class creation; a name that never resolves fails there, with the annotation's own
+  `NameError` rather than a late-declaration refusal.
 - An error from a requirement read is `UnboundRequirementError` rather than a bare `AttributeError`,
   and only for names the type declared.
 
@@ -61,8 +62,8 @@ must not be able to replace is not offered to it as a member.
   `reportUninitializedInstanceVariable`; and "this field is a requirement" can be said outright rather
   than inferred from the shape of a type.
 - **Contract given in the body only** (`store: Store = declares(Store)`). The class body would have to
-  resolve the contract at definition time, which turns forward references, `TYPE_CHECKING` imports and
-  module cycles into hard errors — and states the contract twice.
+  resolve the contract at definition time, which turns forward references and module cycles into hard
+  errors — and states the contract twice.
 - **A marker without a return type** (`store: Store = declared()`). Measured: `reportAny` and
   `reportExplicitAny` warn, which is noisier than the problem it solves.
 - **`@final` on base methods.** A method that needs it is a method that does not belong to the type's
