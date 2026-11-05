@@ -456,7 +456,6 @@ class UnitLoader(Component):
     async def unload(self) -> None:
         """Drop the records; removing the imported modules is not this component's to do."""
         self._generations = {}
-        self._generations = {}
 
     def scope(self) -> frozenset[str]:
         """The module names this component is responsible for: what a reload is allowed to touch.
