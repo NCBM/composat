@@ -90,6 +90,26 @@ answered by whatever the table says — and a table pointing at a key that is no
 last because in-flight requests still hold the old instance; `quiesce` takes it out of service and
 leaves it built, which is the level a grace period needs.
 
+## The rule a batch closes over
+
+`Assembly(registry, up=..., rule=...)` takes the rule a *read* is answered by. A batch needs one more
+thing: where each requirement may be found, so it can bring up what a key needs. `start` derives that
+from the rule's candidate list, so the rule has to be a `Policy` — the type that carries one — rather than
+a function that happens to answer.
+
+A hand-written function is therefore a good rule and a poor batch: the reads answer, and `start` fails
+with a `KeyError` naming the asker's own qualifier, because that is where the closure fell back to. Keep
+the base and hand its places over:
+
+```python
+base = answering_from_the_root(registry, up, only={Dispatcher, Store})
+rule = Policy(lambda key, requirement, effects: per_call_or(base(key, requirement, effects)), base.places)
+```
+
+Or build the rule out of `answering_from`, `joined` and `answering_from_the_root`, which are `Policy`
+objects already. The symptom to recognise: the lookup answers and the batch refuses — the closure lost
+the places, and nothing about the read is wrong.
+
 ## Stopping the process
 
 A host teardown is four steps, and the order is not interchangeable:

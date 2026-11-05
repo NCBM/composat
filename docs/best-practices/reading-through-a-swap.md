@@ -58,6 +58,34 @@ Two habits to avoid:
 - **Do not turn the deadline into a retry loop.** A swap is one move with one end; polling it makes the
   window longer for the reader and hides which of the four rows above actually happened.
 
+## What the call's key decides
+
+`open_call(key, rule)` makes `key` the caller for as long as the block runs, and a rule is handed that
+key as the asker — so the candidate places it derives begin at `key.instance`. Everything `resolve()`
+answers inside the block is answered *at that address*, including everything that falls back from it.
+
+A field read is answered elsewhere: `require()` asks at the instance's own key, whatever call it runs
+inside. The two read different things — what this component reads, and what this request reads:
+
+| reading | the address it uses | moved by the call's key |
+|---|---|---|
+| a `require()` field | the instance's own key | no |
+| `resolve(SomeComponent)` | the call's key | yes |
+
+So a call opened at an address that is not a component's — a user id, a request id, a job id — makes
+`resolve()` a miss: nothing is up at `SomeComponent:<that id>`, and nothing falls back unless the rule
+says so. The field in the same block still answers, which is why the two can disagree:
+
+```python
+async with open_call(ComponentKey(ComponentIdentity.of(Dispatcher), request_id), assembly.rule):
+    handler.provider  # answers: the handler's own key
+    resolve(Registry)  # misses: nothing is up at Registry:<request id>
+```
+
+Two ways to keep them together: open the call at a real address, or make the rule map the call's
+qualifier back to a place (`below=`, or `joined` with the deployment's own derivation).
+`ServiceNotUpError.asked_from` names the key that asked — the call's, not the instance's.
+
 ## A stopped tenant is still built
 
 `quiesce` moves a key to `LOADED`: out of service, still built. What the framework refuses is a read
