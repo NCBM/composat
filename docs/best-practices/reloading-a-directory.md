@@ -111,8 +111,13 @@ is safe; `failed` is per key, so one generation the registry will not take does 
 it will not do is take a key `stop` is already moving: the key is spoken for, and the swap reports a
 `KeyInTransitError` for it rather than racing the teardown ([the retry a host needs](driving-a-running-deployment.md#every-verb-is-one-writer-so-a-host-must-retry)).
 
-`failed` holds what `replace` **raised**. A key that swapped and did not settle cleanly is in
 `reported`, with the `Replacement` the assembly answered with: the retired generation that would not let
 go, a dependant whose `provider_changed` raised, an `enable` that refused, and the instance is the new
 one in every case. Such a key is in `swapped` too, because it did move — read the two maps together, and
 take the field-by-field reading from `SwapResult`.
+
+All four lists are read from the keys the assembly holds an instance for. A declaration nothing brought up
+is therefore in none of them, however often it is reloaded: the new class is declared, no instance is
+built, and the report is empty. A clean `SwapResult` means "nothing that was running was left behind", not
+"the directory is running now". A cancelled reload has no report at all — cancellation is not a per-key
+outcome — so a host that wants to hear about one has to say so itself.
