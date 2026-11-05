@@ -124,6 +124,35 @@ class TestServing:
             _ = run(serving(assembly, at(Store)))
 
         assert raised.value.key == at(Store)
+        # Nothing was ever built under the key, which is an address to fix rather than news about a
+        # key that went down.
+        assert not raised.value.owing
+
+    def test_a_key_whose_teardown_the_table_owes_is_refused_as_one_that_went_down(self) -> None:
+        Slow.hold()
+        assembly = Assembly(declaring(Declaration(Slow)))
+        _ = run(assembly.start(at(Slow)))
+
+        async def scenario() -> ServiceNotUpError:
+            taking_down = asyncio.create_task(assembly.stop(at(Slow)))
+            await Slow.reached.wait()
+            _ = taking_down.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await taking_down
+
+            # No move is under way and no deadline would help: the debt says the key went down, so the
+            # wait must not sit on it.
+            with pytest.raises(ServiceNotUpError) as refused:
+                _ = await asyncio.wait_for(serving(assembly, at(Slow)), 1)
+            Slow.gate.set()
+            _ = await assembly.stop(*assembly.keys())
+            return refused.value
+
+        refused = run(scenario())
+
+        assert refused.key == at(Slow)
+        assert refused.owing
+        assert refused.level is None
 
     def test_a_key_that_leaves_the_table_while_it_waits_is_refused(self) -> None:
         Wobbly.hold()

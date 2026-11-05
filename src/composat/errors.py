@@ -25,17 +25,20 @@ class UnboundServiceError(RuntimeError):
 
 
 class ServiceNotUpError(RuntimeError):
-    """The instance a caller asked for is not one it may read: absent, or resting too low.
+    """The instance a caller asked for is not one it may read: absent, gone, or resting too low.
 
     Services are looked up under the caller's own key, so another instance of the same provider
     belongs to another key, and answering with it would answer a question the caller did not ask.
-    The three fields tell "nothing is up" from "it is up and not serving": the second is work still to
-    finish, and the first is a declaration to add.
+    ``level`` is set when there is an instance and it rests below what the asker may read — work still
+    to finish — and ``owing`` when there is none and the assembly still owes its teardown: a key that
+    went down rather than one that never came up. ``asked_from`` is who asked, where the key was read
+    on somebody else's behalf.
     """
 
     key: ComponentKey
     asked_from: ComponentKey | None
     level: ComponentState | None
+    owing: bool
 
     def __init__(
         self,
@@ -43,14 +46,21 @@ class ServiceNotUpError(RuntimeError):
         *,
         asked_from: ComponentKey | None = None,
         level: ComponentState | None = None,
+        owing: bool = False,
     ) -> None:
-        said = f"nothing is up under {key}" if level is None else f"the instance under {key} is {level.name}"
+        if level is not None:
+            said = f"the instance under {key} is {level.name}"
+        elif owing:
+            said = f"{key} has gone down and its teardown is still owed"
+        else:
+            said = f"nothing is up under {key}"
         if asked_from is not None:
             said = f"{said}, asked for from {asked_from}"
         super().__init__(said)
         self.key = key
         self.asked_from = asked_from
         self.level = level
+        self.owing = owing
 
 
 class NoCallContextError(RuntimeError):
