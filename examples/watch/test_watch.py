@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 from composat import ComponentIdentity, ComponentKey
 from examples.levels.app import build
@@ -17,6 +18,12 @@ def key_of(cls: type) -> ComponentKey:
 async def settle() -> None:
     """Long enough for one debounce window to pass, short enough to keep the suite quick."""
     await asyncio.sleep(0.05)
+
+
+async def edits(queue: asyncio.Queue[str]) -> AsyncIterator[str]:
+    """What a watcher hands the loop: one edit per push, in the order they landed."""
+    while True:
+        yield await queue.get()
 
 
 def test_a_burst_of_edits_becomes_one_reload() -> None:
@@ -77,15 +84,19 @@ def test_the_watch_loop_follows_its_source_and_stops_with_the_instance() -> None
         watcher = assembly.instance(key_of(Watcher))
         assert isinstance(watcher, Watcher)
 
-        source = ["a", "b"]
-        await watcher.watch(source)
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        await watcher.watch(edits(queue))
+        queue.put_nowait("a")
+        queue.put_nowait("b")
         await settle()
-        source.append("c")
+        assert watcher.reloads == ["b"]
+
+        queue.put_nowait("c")
         await settle()
         assert watcher.reloads == ["b", "c"]
 
         _ = await assembly.stop(key_of(Watcher))
-        source.append("d")
+        queue.put_nowait("d")
         await settle()
         assert watcher.reloads == ["b", "c"]
 

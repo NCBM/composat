@@ -1,13 +1,14 @@
-"""A watch loop: a burst of edits becomes one reload, and the scope ends both when it closes.
+"""A watch loop: a burst of edits becomes one reload, and closing the instance ends both.
 
-Neither half is the framework's — deciding *when* to look is deployment policy — but both halves are
-ordinary uses of what the framework does expose: a timer registered on the instance's own scope, and
-a task registered there so that unloading cancels it.
+Neither half is the framework's — what counts as an edit, and how long a burst is — but both halves are
+ordinary uses of what the framework does expose: a timer registered on the instance's own scope, and a
+task registered there so that unloading cancels it.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import override
 
 from composat import Component
@@ -41,16 +42,11 @@ class Watcher(Component):
             await self._pending()
         self._pending = self.effect_scope.after(self.delay, lambda: self.reloads.append(name))
 
-    async def watch(self, source: list[str]) -> None:
+    async def watch(self, source: AsyncIterator[str]) -> None:
         """Follow ``source`` in the background; unloading the instance cancels the loop."""
-        seen = 0
 
-        async def poll() -> None:
-            nonlocal seen
-            while True:
-                while seen < len(source):
-                    await self.note(source[seen])
-                    seen += 1
-                await asyncio.sleep(self.delay / 2)
+        async def follow() -> None:
+            async for name in source:
+                await self.note(name)
 
-        _ = self.effect_scope.put(asyncio.create_task(poll()).cancel)
+        _ = self.effect_scope.put(asyncio.create_task(follow()).cancel)
