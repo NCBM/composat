@@ -15,8 +15,8 @@ do with it.
 | a tenant stops, and may come back | `await assembly.quiesce(*keys)` |
 | a tenant goes away | `await assembly.evict(*keys)` |
 
-Three of those are easy to get wrong, and each is wrong in a way that shows up later rather than
-here:
+A few calls in this shape are easy to get wrong, and each is wrong in a way that shows up later rather
+than here:
 
 - **`admit` is not "make sure it is running".** It refuses a key that is already declared, because a
   caller that never withdraws a dead connection is a caller whose next admission should fail loudly. An
@@ -27,6 +27,9 @@ here:
 - **`evict` refuses a key something still needs** (`DependencyInUseError`, naming who needs it). Order
   the withdrawals the way `stop` orders a teardown — dependants first — or the call tells you which one
   you forgot.
+- **`start` brings up the keys you name, and what they require.** A declaration nothing requires stays
+  down — declared, never built, its `enable` never reached — however it got into the table, so a host
+  that means "everything I declared is running" names those keys itself.
 
 ## Every verb is one writer, so a host must retry
 
@@ -73,6 +76,30 @@ The third one follows from the first only if `drain` is bounded: a drain that wa
 shutdown that never returns, and nothing in the framework has a clock. If a deployment cannot bound it,
 bound the call — `asyncio.timeout` around `stop` — and accept that what is still running is cancelled
 with the epoch.
+
+## A loop or a timer is an effect
+
+A component that starts a task or sets a timer has the instance's own `effect_scope` for it, and putting
+it there is the whole of the bookkeeping:
+
+```python
+self.effect_scope.put(asyncio.create_task(self.follow(source)).cancel)  # ends with the instance
+self.effect_scope.after(self.delay, self.flush)  # one call, later, cancelled if the instance goes first
+```
+
+Both are `Disposable`s: a callable, awaited if it is awaitable, released last-first like everything else
+in the scope ([ADR 0006](../adr/0006-effects-belong-to-the-innermost-lifetime.md)). The scope belongs to
+the instance, so a `reload` closes the old epoch's scope before the new instance opens its own.
+
+Three habits:
+
+- **Register what you start instead of keeping it.** A `self._task` and a `finally` make the same promise
+  somewhere it can be forgotten, and `stop` has no reason to reach into an attribute.
+- **A poll is a timer nobody registered.** `after` runs one effect once and drops it when the instance
+  goes; a sleep loop hides how many times it ran, and keeps waking in an epoch that may already be over.
+- **A failure in an `after` effect has no caller.** It goes to the loop's exception handler, named by
+  `name_of` — which reads `__name__`, so a `lambda` reports `<lambda>` and the log line stops naming
+  which timer fired.
 
 ## Bringing two credentials side by side
 
