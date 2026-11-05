@@ -1385,3 +1385,48 @@ class TestOneWriterPerKey:
             assert result.completed == (at(Store),)
 
         run(scenario())
+
+
+class TestWhatIsInTransit:
+    """The claim read from outside: what a batch is doing to a key, and nothing when it rests."""
+
+    def test_a_key_a_batch_is_building_is_named_as_being_brought_up(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Held)))
+            building = asyncio.create_task(assembly.start(at(Held)))
+            await Held.entered.wait()
+
+            assert assembly.in_transit(at(Held)) == "being brought up"
+            Held.opening.set()
+            _ = await building
+            assert assembly.in_transit(at(Held)) is None
+
+        run(scenario())
+
+    def test_a_key_being_replaced_is_named_for_the_whole_swap(self) -> None:
+        async def scenario() -> None:
+            fresh_gates()
+            assembly = Assembly(declaring(Declaration(Lingering)))
+            _ = await assembly.start(at(Lingering))
+            swapping = asyncio.create_task(assembly.replace(at(Lingering), Declaration(generation("Lingering"))))
+            await Lingering.entered.wait()
+
+            # The key answers the new generation and the old one is still going, which is the window
+            # a reader has to be told about: the level it answers at is about to change.
+            assert assembly.in_transit(at(Lingering)) == "being replaced"
+            Lingering.opening.set()
+            _ = await swapping
+            assert assembly.in_transit(at(Lingering)) is None
+
+        run(scenario())
+
+    def test_a_key_at_rest_is_named_by_nothing(self) -> None:
+        async def scenario() -> None:
+            assembly = Assembly(declaring(Declaration(Store)))
+            _ = await assembly.start(at(Store))
+
+            assert assembly.in_transit(at(Store)) is None
+            assert assembly.in_transit(at(Store, "elsewhere")) is None
+
+        run(scenario())

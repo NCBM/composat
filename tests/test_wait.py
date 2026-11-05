@@ -127,6 +127,41 @@ class TestServing:
         assert waited is assembly.instance(at(Slow))
         assert waited.state.state is ComponentState.ENABLED
 
+    def test_a_key_that_rests_below_serving_is_refused_at_once(self) -> None:
+        assembly = Assembly(declaring(Declaration(Store)))
+        _ = run(assembly.start(at(Store), enable=False))
+
+        with pytest.raises(ServiceNotUpError) as raised:
+            _ = run(serving(assembly, at(Store)))
+
+        # Nothing is moving it, so waiting would be waiting for nothing: the level it rests at is the
+        # answer, and the caller's own deadline is not what finds that out.
+        assert raised.value.key == at(Store)
+        assert raised.value.level is ComponentState.LOADED
+
+    def test_a_key_that_settles_below_serving_while_it_waits_is_refused(self) -> None:
+        Slow.hold()
+        assembly = Assembly(declaring(Declaration(Slow)))
+        _ = run(assembly.start(at(Slow), enable=False))
+
+        async def scenario() -> ServiceNotUpError:
+            swap = asyncio.create_task(assembly.replace(at(Slow), Declaration(generation("Slow"))))
+            await Slow.reached.wait()
+
+            waiter = asyncio.create_task(serving(assembly, at(Slow)))
+            Slow.gate.set()
+            with pytest.raises(ServiceNotUpError) as refused:
+                _ = await asyncio.wait_for(waiter, 1)
+            _ = await swap
+            return refused.value
+
+        refused = run(scenario())
+
+        # The old generation was not serving, so the swap has no publish segment: the new one settles
+        # at ``LOADED``, and the wait ends with that level rather than with a deadline.
+        assert refused.key == at(Slow)
+        assert refused.level is ComponentState.LOADED
+
     def test_a_serving_caller_is_refused_the_generation_that_does_not_serve_yet(self) -> None:
         Slow.hold()
         assembly = Assembly(declaring(Declaration(Reading), Declaration(Slow)))

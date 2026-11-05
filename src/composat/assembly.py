@@ -386,6 +386,22 @@ class Assembly:
         """Every key that is up, in the order it came up."""
         return tuple(self._up)
 
+    def in_transit(self, key: ComponentKey) -> str | None:
+        """What a batch is doing to ``key`` right now, or ``None`` when nothing is.
+
+        The claim is what a verb takes before it moves a key and gives back when it is done, so this
+        is the one reading of a key that is *between* levels rather than at one. A reader that found
+        the key at a level it cannot use asks here whether the level is about to change: a swap is
+        the case that matters, since the generation it published answers at ``LOADED`` until the one
+        it replaced has let go.
+
+        ``None`` is the answer for a key at rest and for one the table does not hold at all — nothing
+        is being done to it either way. What makes that worth telling apart is that waiting for a move
+        and waiting for nothing are different questions, and only the first one is answered by a
+        subscription (:func:`composat.std.wait.serving` reads this to refuse the second).
+        """
+        return self._moving.get(key)
+
     def declaration(self, key: ComponentKey) -> Declaration:
         """How ``key`` was declared: the class, the qualifier, and what it is built with.
 
