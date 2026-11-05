@@ -1,0 +1,53 @@
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The name here has to be the environment the project's trusted publisher was registered with.
+    environment: pypi
+    permissions:
+      # This job writes the release, so the token it runs with has to be allowed to.
+      contents: write
+      # Trusted publishing: PyPI verifies a short-lived OIDC token minted for this repository and
+      # environment, so no API token is stored in the repository or handed to a pull request.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+
+      # A number spent on PyPI cannot be taken back, so the tag has to be the version the build
+      # declares: a mislabelled tag would publish a release nobody asked for.
+      - name: The tag names the version pyproject.toml declares
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          test "$tag" = "$version"
+
+      - name: Build the sdist and the wheel
+        run: pdm build
+
+      # ``CHANGELOG.md`` is what a release says, so the section this version owns is the notes:
+      # from its ``## <version>`` heading to the next heading at that level.
+      - name: Take the notes from the changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          awk -v v="^## ${version//./[.]}$" '$0 ~ v {inside = 1; next} inside && /^## / {exit} inside' \
+            CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
+          test -s "${RUNNER_TEMP}/notes.md"
+
+      - name: Write the release the tag names
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/notes.md"
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
