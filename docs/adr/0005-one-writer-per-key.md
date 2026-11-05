@@ -19,10 +19,11 @@ A verb claims the keys it names, and the keys it derives, from the moment it acc
 last of them is done (`Assembly._claim`). The claim is a region with no `await` in it: the event loop
 already refuses to interleave two such regions, so nothing here is locked and unrelated keys keep
 running. A second call that names a claimed key is refused with `KeyInTransitError`, whose message
-carries the holder's own phrase ("being brought up", "being moved to ENABLED"). The claim is readable
-without taking one (`Assembly.in_transit`), because "a move is running" and "this is the level the key
-rests at" are different answers to a reader that found a level it cannot use, and only the first one is
-worth waiting for.
+carries the holder's own phrase ("being brought up", "being moved to ENABLED").
+
+The claim is also readable without taking one (`Assembly.in_transit`), and it carries the level the
+move ends at. That second half is what a waiter needs: a key being published and a key being taken
+down are both in transit, and waiting for the second is waiting for a level the caller cannot use.
 
 Nothing is queued, and no verb invents an order between two callers.
 
@@ -40,9 +41,8 @@ handler cannot refuse a move, cannot stop the others, and its failure is reporte
 ## Consequences
 
 - A caller that wants to wait for a key in transit holds its own lock; the refusal tells it what the
-  other call is doing, which is the part the framework can honestly say. What it can also say is
-  *whether* a move is what the key is waiting on: `std.wait.serving` reads the claim, waits out a swap,
-  and refuses a key that rests below serving instead of waiting it out to the caller's deadline.
+  other call is doing. Where the wait is worth making, `std.wait.serving` reads the claim: it waits out
+  a swap, and refuses a key at rest below serving instead of spending the caller's deadline on it.
 - An observer that has to await queues the event (`put_nowait`) and owns the task that drains it.
 - `ok` stays a reading about the batch: a batch whose keys all came up came up, whatever the sinks said.
 

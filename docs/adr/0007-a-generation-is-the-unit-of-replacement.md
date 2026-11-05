@@ -32,7 +32,8 @@ there is new and empty; what has to survive belongs outside the module and is re
 - A deployment that reloads and stops there has the new code in `sys.modules` and the old code serving;
   the second verb is not optional, which is why there are two.
 - A swap has no gap: the key moves to the new generation before the old one is torn down, and the new one
-  is published (enabled) only after the old one has let go.
+  is published (enabled) only after the old one has let go. That stretch is the retired generation's
+  `drain`, which is also how long a reader arriving in it waits.
 - A generation the registry will not take — a type that now asks for something else — fails that key and
   leaves the others to move.
 

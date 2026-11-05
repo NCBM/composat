@@ -67,10 +67,15 @@ reading them in this order means never meeting a symbol that has not been introd
    — an account and one endpoint of it — keeps both in the string and derives the places a requirement
    may be answered from in its own rule ([ADR 0003](adr/0003-a-key-is-an-address.md)); the shipped
    policy takes that derivation as `below=` ([below](#a-rule-with-levels-in-it)).
-8. **A key is either being moved or at rest, and the table says which.** The claim a verb takes is
-   readable (`Assembly.in_transit`), so a reader that found a level it cannot use can tell "about to
-   change" from "will not change" — `std.wait.serving` waits out the first and refuses the second
-   ([ADR 0005](adr/0005-one-writer-per-key.md)).
+8. **A key is either being moved or at rest, and the table says which.** A verb's claim is readable
+   (`Assembly.in_transit`), and it carries the level the move ends at, so a reader that found a level
+   it cannot use can tell a key that is about to answer from one that is going away — and only the
+   first is worth waiting for ([ADR 0005](adr/0005-one-writer-per-key.md)).
+9. **Only a caller that is serving is policed.** A provider has to be `ENABLED` for a caller that is
+   serving, and `ENABLED` or `DRAINING` for one that is draining; everything else — a hook in `load` or
+   `unload`, and a key the table does not place at all — reaches whatever the assembly holds. So a
+   component that has been stopped still reads its own fields: what `quiesce` takes away is the work
+   that arrives *through* it, not what it can do to itself (`composat.state.READABLE`).
 
 ## A rule with levels in it
 
@@ -108,3 +113,20 @@ qualifier, then what `below` derives, then the root — and `Assembly.start` clo
 so an account a read would fall back to comes up with its dependant. Nothing else is widened: `only=`
 still says which identities may cross to the root, and every place is a place of the same identity — a
 sibling is never one.
+
+What a rule derives is a list of places, and putting an instance at one is the manifest's: the
+qualifier is written on the declaration, and the constructor's arguments with it.
+
+```python
+_ = registry.declare_all(
+    (
+        Declaration(Config),  # the one instance of that identity, at the empty qualifier
+        Declaration(Credential, instance="acme/credential-a", args=("a",)),
+        Declaration(Endpoint, instance="acme/one"),
+    )
+)
+```
+
+A swap keeps the address and changes only what is built behind it —
+`replace(ComponentKey(ComponentIdentity.of(Credential), "acme/credential-a"), Declaration(...))` — so a
+rule never has to be rebuilt for a generation to change.
