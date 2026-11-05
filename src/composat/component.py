@@ -106,7 +106,8 @@ class _Bound:
         site the annotation disagrees with, since one of the two is then wrong, and one whose
         annotation names nothing a requirement could ever be answered by.
         """
-        named = _is_contract(annotation)
+        peeled, extras = _unwrap(annotation)
+        named = _is_contract(peeled)
         if self.contract is not None and named is not None and named is not self.contract:
             asked, said = self.contract.__qualname__, named.__qualname__
             raise ValueError(f"{owner.__qualname__}.{name} is declared for {asked} and annotated {said}")
@@ -114,7 +115,7 @@ class _Bound:
         if contract is None:
             where = "names no contract" if annotation is None else "names something that is not a contract"
             raise ValueError(f"{owner.__qualname__}.{name} is a requirement whose annotation {where}")
-        self.spec = RequirementSpec(name, contract, _extras(annotation))
+        self.spec = RequirementSpec(name, contract, extras)
         return self.spec
 
     def __get__(self, instance: Component | None, owner: type[object] | None = None) -> object:
@@ -167,27 +168,24 @@ def require[T](contract: type[T] | None = None) -> T:
     return cast("T", _Bound(contract))
 
 
-def _peeled(annotation: object) -> object:
-    """``annotation`` with its ``Annotated`` wrappers removed: the contract it names, if any."""
-    current = annotation
-    while get_origin(current) is Annotated:
-        current = cast("object", get_args(current)[0])
-    return current
+def _unwrap(annotation: object) -> tuple[object, tuple[object, ...]]:
+    """``annotation`` split into what it names and the metadata its ``Annotated`` layers carry.
 
-
-def _extras(annotation: object) -> tuple[object, ...]:
-    """The metadata every ``Annotated`` layer of ``annotation`` carries, outermost first."""
+    One walk answers both halves: the layers nest outermost first, so the metadata comes out in that
+    order and the value left at the bottom is the one a requirement is answered by. An annotation
+    with no layer is its own value and carries nothing.
+    """
     current = annotation
     found: list[object] = []
     while get_origin(current) is Annotated:
         args = get_args(current)
         found.extend(args[1:])
         current = cast("object", args[0])
-    return tuple(found)
+    return current, tuple(found)
 
 
-def _is_contract(annotation: object) -> type[object] | None:
-    """The contract ``annotation`` names, or ``None`` when it names an ordinary value.
+def _is_contract(peeled: object) -> type[object] | None:
+    """The contract ``peeled`` names, or ``None`` when it names an ordinary value.
 
     This is the check a *marked* field goes through, not what finds the marked fields: the class body
     said which fields are requirements, and this decides whether what each one is annotated with can
@@ -195,10 +193,9 @@ def _is_contract(annotation: object) -> type[object] | None:
     draws an edge for it; anything else — ``list[str]``, a plain resource type — is an ordinary value,
     which a requirement cannot ask for.
     """
-    contract = _peeled(annotation)
-    if not isinstance(contract, type):
+    if not isinstance(peeled, type):
         return None
-    klass = cast("type[object]", contract)
+    klass = cast("type[object]", peeled)
     if not (issubclass(klass, Component) or bool(getattr(klass, "_is_protocol", False))):
         return None
     return klass
