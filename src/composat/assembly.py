@@ -636,7 +636,7 @@ class Assembly:
         teardown is the new generation at ``LOADED``, built and not yet taking work — a reader that
         has to read *now* waits it out with ``composat.std.wait.serving`` rather than retrying. Only
         after the old generation has let go is the new one brought to the level that one *served* at,
-        which keeps a registration made on the way up (a matcher in a shared dispatcher, a row in a
+        which keeps a registration made in ``enable`` (a matcher in a shared dispatcher, a row in a
         table) from being live twice. A key that rested at ``LOADED`` has no publish segment: nothing
         it replaced was serving, so the swap is the one move it always was.
 
