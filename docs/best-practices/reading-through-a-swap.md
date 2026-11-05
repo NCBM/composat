@@ -63,6 +63,9 @@ Two habits to avoid:
   `serving` is the part with a policy.
 - **Do not turn the deadline into a retry loop.** A swap is one move with one end; polling it makes the
   window longer for the reader and hides which of the four rows above actually happened.
+- **Do not wait from inside a hook.** The events a move produces are delivered between moves, so a
+  `serving` awaiting the call it is part of waits for itself
+  ([what a hook must not wait for](what-a-hook-must-not-wait-for.md)).
 ## What the call's key decides
 
 `open_call(key, rule)` makes `key` the caller for as long as the block runs, and a rule is handed that

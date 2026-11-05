@@ -159,7 +159,7 @@ The checks a change has to pass are the ones in
 |---|---|
 | `docs/architecture.md` | how the layers fit, the direction of imports, and what holds across modules |
 | `docs/adr/` | the decisions behind those shapes, numbered in the order they were made, with the alternatives each refused |
-| `docs/best-practices/` | what to do with the shapes: the verbs a host calls and their order, how a request reads through a swap, what a replaced component registers, and how a directory of code is reloaded |
+| `docs/best-practices/` | what to do with the shapes: the verbs a host calls and their order, how a request reads through a swap, what a hook must not wait for, what a replaced component registers, and how a directory of code is reloaded |
 | `examples/README.md` | one row per shape an application takes, each a working directory |
 | `CHANGELOG.md` | what changed in each release |
 

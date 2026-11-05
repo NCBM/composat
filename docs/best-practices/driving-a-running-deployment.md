@@ -55,6 +55,9 @@ a bound: the framework refuses rather than queues because two callers that disag
 tenant should be serving must not be settled by whichever was scheduled second, and a retry forever
 puts that decision back but with nobody awake to make it.
 
+The retry is the caller's answer to a refusal; a hook has the opposite problem, since it runs *inside*
+the call and cannot retry its way out of waiting for it ([what a hook must not wait for](what-a-hook-must-not-wait-for.md)).
+
 ## The three numbers
 
 There are exactly three durations in this shape, and they are chosen in this order:

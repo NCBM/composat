@@ -61,9 +61,10 @@ instance that was replaced. Two things follow:
 - The field already answers the new generation when the hook runs: a dependant that needs the value reads
   it, and one that needs to know it moved compares the instance it kept.
 - The new generation is at `LOADED` when this runs (its `enable` is the last step of the swap), so a
-  read taken here can be a `ServiceNotUpError` at `level=LOADED`. A dependant that has to act on the
-  new one *now* waits with `composat.std.wait.serving` rather than retrying
-  ([the four rows](reading-through-a-swap.md#wait-or-fail)).
+  read taken here can be a `ServiceNotUpError` at `level=LOADED`. This hook cannot wait for that
+  `enable`: the events that announce it are staged until the swap ends, so a
+  `composat.std.wait.serving` here waits for the hook to return
+  ([what a hook must not wait for](what-a-hook-must-not-wait-for.md)).
 
 ## `drain` is the length of the window
 
