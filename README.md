@@ -44,16 +44,35 @@ await assembly.stop(*result.completed)  # what this batch built, not what it nam
 ```
 
 Neither batch verb raises for what a component did: both report it, so one tenant's broken
-configuration stays that tenant's problem. `assembly.replace(key, Declaration(NewEngine))` puts a new
-generation behind a key without a gap in what the key answers;
-`composat.std.wait.serving(assembly, key)` is how a reader waits out the window where the old
-generation is still being torn down, and how it hears that a key is not on its way at all: one that
-rests below serving and that nothing is moving is refused with the level it rests at rather than
-waited for (`Assembly.in_transit` is the difference).
+configuration stays that tenant's problem. `strict=True` is the other reading of the same batch — what
+that call brought up is taken back down, and the original failure goes on to the caller.
+`assembly.replace(key, Declaration(NewEngine))` puts a new generation behind a key without a gap in
+what the key answers. A reader that arrives in such a window meets a generation that is built and not
+yet serving: `composat.std.wait.serving(assembly, key)` waits it out, and refuses a key that rests
+below serving with no move taking it there instead of spending its deadline on it.
+
+The verbs are one vocabulary:
+
+| verb | what it is for |
+|---|---|
+| `start(*keys, enable=True, strict=False)` | the keys named and what they require, built — serving unless told otherwise |
+| `stop(*keys)` | the keys named, taken down; a key that is not up is passed over, so `stop(*assembly.keys())` is the teardown a host runs unconditionally |
+| `migrate(*keys, to=level)` | the keys named, moved to a level an assembly holds: `LOADED`, `DRAINING` or `ENABLED` |
+| `enable(*keys)` | that move, to serving |
+| `quiesce(*keys)` | that move, out of service and still built: what `enable` puts back |
+| `admit(*declarations, enable=True)` | a declaration and the batch that brings it up, as one call |
+| `evict(*keys)` | a key taken down and its declaration withdrawn: the other end of `admit` |
+| `replace(key, declaration)` | a new generation behind a key that is serving; the instance, or a `Replacement` when part of it did not go through |
+
+What a key is *between* levels is readable as well: `Assembly.in_transit(key)` answers what a move is
+doing to it and where that move ends, which is how a reader tells a swap worth waiting out from a
+teardown worth failing on. `docs/best-practices/` is what to do with that when a request arrives in
+the middle of one.
 
 A key is an identity plus a qualifier: `ComponentIdentity` is the class's own path
 (`module.qualname`), and the qualifier is whatever tells instances of it apart — a tenant, a row id,
-or nothing at all.
+or nothing at all. `Declaration(Store, instance="tenant-a")` is how a deployment puts an instance at
+one, and `args`/`kwargs` are passed to the component's constructor as they are.
 
 ## Loading a directory
 
@@ -139,6 +158,7 @@ installs what they need.
 |---|---|
 | `docs/architecture.md` | how the layers fit, the direction of imports, and what holds across modules |
 | `docs/adr/` | the decisions behind those shapes, numbered in the order they were made, with the alternatives each refused |
+| `docs/best-practices/` | what to do with the shapes: the verbs a host calls and their order, and how a request reads through a swap |
 | `examples/README.md` | one row per shape an application takes, each a working directory |
 | `CHANGELOG.md` | what changed in each release |
 
