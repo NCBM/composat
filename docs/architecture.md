@@ -67,6 +67,10 @@ reading them in this order means never meeting a symbol that has not been introd
    — an account and one endpoint of it — keeps both in the string and derives the places a requirement
    may be answered from in its own rule ([ADR 0003](adr/0003-a-key-is-an-address.md)); the shipped
    policy takes that derivation as `below=` ([below](#a-rule-with-levels-in-it)).
+8. **A key is either being moved or at rest, and the table says which.** The claim a verb takes is
+   readable (`Assembly.in_transit`), so a reader that found a level it cannot use can tell "about to
+   change" from "will not change" — `std.wait.serving` waits out the first and refuses the second
+   ([ADR 0005](adr/0005-one-writer-per-key.md)).
 
 ## A rule with levels in it
 

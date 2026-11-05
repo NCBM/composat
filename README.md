@@ -47,7 +47,9 @@ Neither batch verb raises for what a component did: both report it, so one tenan
 configuration stays that tenant's problem. `assembly.replace(key, Declaration(NewEngine))` puts a new
 generation behind a key without a gap in what the key answers;
 `composat.std.wait.serving(assembly, key)` is how a reader waits out the window where the old
-generation is still being torn down.
+generation is still being torn down, and how it hears that a key is not on its way at all: one that
+rests below serving and that nothing is moving is refused with the level it rests at rather than
+waited for (`Assembly.in_transit` is the difference).
 
 A key is an identity plus a qualifier: `ComponentIdentity` is the class's own path
 (`module.qualname`), and the qualifier is whatever tells instances of it apart — a tenant, a row id,
